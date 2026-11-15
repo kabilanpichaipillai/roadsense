@@ -308,18 +308,57 @@ function drawMap(id, reports, { zoom = 15, interactive = true } = {}) {
   const esri = (layer) => `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_${tone}_Gray_${layer}/MapServer/tile/{z}/{y}/{x}`;
   L.tileLayer(esri("Base"), { maxZoom: 19, maxNativeZoom: 16, attribution: "Tiles © Esri, HERE, Garmin, © OpenStreetMap contributors" }).addTo(m);
   L.tileLayer(esri("Reference"), { maxZoom: 19, maxNativeZoom: 16 }).addTo(m);
-  const pts = [];
-  for (const r of reports) {
-    const c = MAP_COLORS[r.status] || "#667085";
-    L.circleMarker([r.lat, r.lon], { radius: 6 + Math.min(r.confirmations, 4) * 2, color: getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() || "#fff",
-      weight: 2, fillColor: c, fillOpacity: .95, className: r.status === "pending_approval" ? "ns-pending" : "" })
-      .bindPopup(`<b>#${r.id} ${esc(r.class_name)}</b><br>${esc(r.address || "")}<br>${esc(authority(r.jurisdiction))} · ${esc(STATUS[r.status]?.[0] || r.status)}<br>${r.confirmations} driver(s)<br><a href="#/reports?id=${r.id}">Open report</a>`)
-      .addTo(m);
-    pts.push([r.lat, r.lon]);
-  }
+  const outline = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() || "#fff";
+  const single = (r) => L.circleMarker([r.lat, r.lon], { radius: 6 + Math.min(r.confirmations, 4) * 2, color: outline,
+    weight: 2, fillColor: MAP_COLORS[r.status] || "#667085", fillOpacity: .95, className: r.status === "pending_approval" ? "ns-pending" : "" })
+    .bindPopup(`<b>#${r.id} ${esc(r.class_name)}</b><br>${esc(r.address || "")}<br>${esc(authority(r.jurisdiction))} · ${esc(STATUS[r.status]?.[0] || r.status)}<br>${r.confirmations} driver(s)<br><a href="#/reports?id=${r.id}">Open report</a>`);
+  const layer = L.layerGroup().addTo(m);
+  // Reports closer than CLUSTER_PX on screen merge into one circle sized by count; it splits again as you zoom in.
+  const draw = () => {
+    layer.clearLayers();
+    for (const group of clusterReports(m, reports)) {
+      if (group.length === 1) { layer.addLayer(single(group[0])); continue; }
+      layer.addLayer(clusterMarker(m, group));
+    }
+  };
+  m.on("zoomend", draw);
+  const pts = reports.map((r) => [r.lat, r.lon]);
   if (pts.length > 1) m.fitBounds(pts, { padding: [30, 30], maxZoom: 16 });
+  draw();
   maps.push(m);
   setTimeout(() => m.invalidateSize(), 50);
+}
+
+const CLUSTER_PX = 44, CLUSTER_OFF_ZOOM = 18;
+function clusterReports(m, reports) {
+  if (m.getZoom() >= CLUSTER_OFF_ZOOM) return reports.map((r) => [r]);
+  const groups = [];
+  for (const r of reports) {
+    const p = m.project([r.lat, r.lon]);
+    const near = groups.find((g) => g.at.distanceTo(p) <= CLUSTER_PX);
+    if (near) { near.items.push(r); near.at = near.at.multiplyBy(near.items.length - 1).add(p).divideBy(near.items.length); }
+    else groups.push({ at: p, items: [r] });
+  }
+  return groups.map((g) => g.items);
+}
+
+/* The cluster takes the most urgent status inside it, so a single report awaiting review is never hidden. */
+const URGENCY = ["delivery_failed", "pending_approval", "approved", "submitted", "fixed", "rejected"];
+function clusterMarker(m, group) {
+  const lat = group.reduce((a, r) => a + r.lat, 0) / group.length, lon = group.reduce((a, r) => a + r.lon, 0) / group.length;
+  const status = URGENCY.find((s) => group.some((r) => r.status === s)) || group[0].status;
+  const size = Math.round(30 + Math.min(Math.sqrt(group.length) * 7, 34));
+  const pending = group.filter((r) => r.status === "pending_approval").length;
+  const label = `${group.length} reports${pending ? `, ${pending} awaiting review` : ""}`;
+  const icon = L.divIcon({ className: "ns-cluster-wrap", iconSize: [size, size],
+    html: `<span class="ns-cluster ${status === "pending_approval" ? "is-pending" : ""}" style="--c:${MAP_COLORS[status] || "#667085"};width:${size}px;height:${size}px" aria-label="${esc(label)}">${group.length}</span>` });
+  const marker = L.marker([lat, lon], { icon, title: label, keyboard: true, riseOnHover: true });
+  marker.on("click", () => {
+    const bounds = L.latLngBounds(group.map((r) => [r.lat, r.lon]));
+    if (bounds.getNorthEast().equals(bounds.getSouthWest())) m.setView(bounds.getCenter(), CLUSTER_OFF_ZOOM);
+    else m.fitBounds(bounds, { padding: [48, 48], maxZoom: CLUSTER_OFF_ZOOM });
+  });
+  return marker;
 }
 
 async function renderMap(params) {

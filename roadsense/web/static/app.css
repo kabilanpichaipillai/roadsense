@@ -626,6 +626,17 @@ body.loading .topbar::after { opacity: 1; animation: ns-dash .7s linear infinite
 .leaflet-control-attribution { background: color-mix(in srgb, var(--surface) 80%, transparent) !important; color: var(--muted) !important; }
 .leaflet-control-attribution a { color: var(--text-2) !important; }
 .ns-pending { animation: ns-marker 1.8s ease-in-out infinite; }
+/* clusters: one circle for reports that sit together at this zoom; bigger with more reports */
+.ns-cluster-wrap { background: none; border: 0; }
+.ns-cluster { display: grid; place-items: center; border-radius: 50%; cursor: pointer; position: relative;
+  background: var(--c); color: var(--asphalt-950); font: 700 13px/1 var(--display); border: 2px solid var(--bg);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--c) 28%, transparent), 0 8px 20px -6px rgba(0, 0, 0, .6);
+  transition: transform var(--dur) var(--ease); animation: ns-cluster-in .35s var(--ease-out) both; }
+.ns-cluster:hover { transform: scale(1.08); }
+.ns-cluster.is-pending::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid var(--c);
+  animation: ns-ring 2s ease-out infinite; }
+@keyframes ns-cluster-in { from { transform: scale(.4); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes ns-ring { from { transform: scale(1); opacity: .8; } to { transform: scale(1.7); opacity: 0; } }
 
 /* feedback */
 .toast { background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-left: 3px solid var(--primary); }
@@ -653,7 +664,8 @@ body.loading .topbar::after { opacity: 1; animation: ns-dash .7s linear infinite
 @keyframes ns-marker { 0%, 100% { stroke-width: 2; stroke-opacity: 1; } 50% { stroke-width: 9; stroke-opacity: .35; } }
 @media (prefers-reduced-motion: reduce) {
   .ns-stagger > *, .ns-stagger .kpis > *, .funnel .bar > i, .meter span, .progress > i, .login-card { animation: none !important; }
-  .nav a.active::before, .inbox-item.on::before, .ns-scan::after, .ns-pending, body.loading .topbar::after { animation: none !important; }
+  .nav a.active::before, .inbox-item.on::before, .ns-scan::after, .ns-pending, body.loading .topbar::after,
+  .ns-cluster, .ns-cluster::after { animation: none !important; }
 }
 
 /* ---------- v2.3: public home (landing) shown before sign-in ---------- */

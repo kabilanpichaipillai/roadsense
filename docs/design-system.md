@@ -16,6 +16,9 @@ v3 gives the signed-in app the public home page's language. What changed from v2
   - Cards get a pointer spotlight (`.ns-spot`); the evidence photo gets a scan line (`.ns-scan`).
   - On the map, the base map follows the theme (Esri Dark Gray or Light Gray canvas, with a street-label layer) and reports
     awaiting review pulse (`.ns-pending`).
+  - Reports that sit closer than 44 px on screen merge into one circle showing the count (`.ns-cluster`), bigger
+    with more reports and coloured by the most urgent status inside; clicking zooms to them, and from zoom 18 every
+    report shows on its own.
 - **Ambient.** A faint street grid and a warm glow sit behind every page.
 
 The v2 notes below still describe the token layers, components and patterns; read colours and fonts through v3.
