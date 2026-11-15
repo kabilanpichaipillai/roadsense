@@ -52,7 +52,7 @@ def test_disputed_keeps_edge_label_and_flags_report(db):
 def test_jurisdiction_routing(db):
     with session() as conn:
         highway = geo.jurisdiction_candidates(geo.reverse_geocode(conn, 44.6800, -63.6797))  # on Highway 102
-        numbered = geo.jurisdiction_candidates(geo.reverse_geocode(conn, 44.6800, -63.6451))  # Bedford Highway
+        numbered = geo.jurisdiction_candidates(geo.reverse_geocode(conn, *geo.point_on_road(1, 0.5)))  # Bedford Highway
         street = geo.jurisdiction_candidates(geo.reverse_geocode(conn, 44.6430, -63.5800))
     assert highway[0]["authority"] == geo.PROVINCIAL and highway[0]["confidence"] == "high"
     assert {c["confidence"] for c in numbered} == {"medium"} and len(numbered) == 2  # ambiguous: agent decides
@@ -124,3 +124,10 @@ def test_agent_output_contract():
     assert ok is not None and err is None
     bad, err = validate(VisionResult, '{"events": [{"event_id": "e1", "verdict": "probably", "rationale": "x"}]}')
     assert bad is None and "verdict" in err
+
+
+def test_bedford_highway_follows_the_shore_not_the_basin():
+    # the old straight-line fixture put this point, in Bedford Basin, on the highway
+    assert geo._offline(44.68034, -63.645425)["road"] is None
+    for t in (0.0, 0.25, 0.5, 0.75, 1.0):
+        assert geo._offline(*geo.point_on_road(1, t))["road"] == "Bedford Highway"

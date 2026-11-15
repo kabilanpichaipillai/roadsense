@@ -34,11 +34,6 @@ from roadsense.edge.simulate_gps import HALIFAX_ROUTE  # noqa: E402
 OUT = ROOT / "demo" / "trip"
 
 
-def on(seg, t):
-    (a_lat, a_lon), (b_lat, b_lon) = seg
-    return a_lat + t * (b_lat - a_lat), a_lon + t * (b_lon - a_lon)
-
-
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--images", required=True)
@@ -62,12 +57,10 @@ def main():
             elif best == 0.0 and not false:
                 false.append((path, frame, d))
     street = points_along(HALIFAX_ROUTE, 120.0)
-    hwy = geo.OFFLINE_ROADS[0][3], geo.OFFLINE_ROADS[0][4]
-    bed = geo.OFFLINE_ROADS[1][3], geo.OFFLINE_ROADS[1][4]
     plan = [("demo-01", "demo-halifax", real[0], street[2], "Halifax street"),
             ("demo-02", "demo-halifax", real[1], street[6], "Halifax street"),
-            ("demo-03", "demo-halifax", real[2], on(hwy, 0.5), "Highway 102 (provincial)"),
-            ("demo-04", "demo-halifax", real[3], on(bed, 0.5), "Bedford Highway (numbered route)"),
+            ("demo-03", "demo-halifax", real[2], geo.point_on_road(0, 0.5), "Highway 102 (provincial)"),
+            ("demo-04", "demo-halifax", real[3], geo.point_on_road(1, 0.5), "Bedford Highway (numbered route)"),
             ("demo-05", "demo-halifax", false[0], street[9], "detection overlapping no labelled damage"),
             ("demo-06", "demo-halifax-2", real[0], (street[2][0] + 0.00003, street[2][1] + 0.00002),
              "second driver, same defect as demo-01")]

@@ -49,12 +49,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from eval_verifier import ground_truth  # noqa: E402
 
 
-def on_segment(seg, lat):
-    (a_lat, a_lon), (b_lat, b_lon) = seg
-    t = (lat - a_lat) / (b_lat - a_lat)
-    return lat, a_lon + t * (b_lon - a_lon)
-
-
 def street_points(n: int) -> list[tuple[float, float]]:
     """Points 45 m apart along the Halifax route (which follows real streets), so they never dedupe by accident."""
     pts = points_along(HALIFAX_ROUTE, 45.0)
@@ -86,10 +80,8 @@ def build(images: Path, n_single: int, seed: int) -> list[dict]:
     items = real + false
     rng.shuffle(items)  # spread false alarms over every kind of road
     n_hwy, n_bed = max(len(items) // 6, 2), max(len(items) // 9, 1)
-    hwy_lats = [44.6700 + i * 0.020 / n_hwy for i in range(n_hwy)]
-    bed_lats = [44.6700 + i * 0.015 / n_bed for i in range(n_bed)]
-    hwy = [on_segment((geo.OFFLINE_ROADS[0][3], geo.OFFLINE_ROADS[0][4]), lat) for lat in hwy_lats]
-    bed = [on_segment((geo.OFFLINE_ROADS[1][3], geo.OFFLINE_ROADS[1][4]), lat) for lat in bed_lats]
+    hwy = [geo.point_on_road(0, 0.1 + 0.8 * i / max(n_hwy - 1, 1)) for i in range(n_hwy)]
+    bed = [geo.point_on_road(1, 0.15 + 0.7 * i / max(n_bed - 1, 1)) for i in range(n_bed)]
     streets = street_points(len(items) - n_hwy - n_bed)
     del edge  # free the GPU for the verifier in the detector MCP server
     import torch

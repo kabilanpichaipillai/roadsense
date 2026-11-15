@@ -14,11 +14,31 @@ from ..common.config import settings
 
 # Halifax Regional Municipality, rough bounding box (lat_min, lat_max, lon_min, lon_max)
 OFFLINE_REGIONS = [("Halifax Regional Municipality", "Nova Scotia", (44.40, 45.25, -64.20, -62.50))]
-# Offline road fixture (approximate OSM geometry) so routing works without network: (name, class, ref, a, b, buffer m)
+# Offline road fixture so routing works without network: (name, class, ref, path, buffer m). Each path is a polyline
+# of OSM geometry (via OSRM), south to north. Bedford Highway curves around Bedford Basin, so a straight line between
+# its ends would cross the water.
 OFFLINE_ROADS = [
-    ("Highway 102", "motorway", "NS 102", (44.66842, -63.67697), (44.69157, -63.68247), 80),
-    ("Bedford Highway", "primary", "NS 2", (44.66249, -63.62983), (44.69819, -63.66102), 40),
+    ("Highway 102", "motorway", "NS 102", [(44.66842, -63.67697), (44.69157, -63.68247)], 80),
+    ("Bedford Highway", "primary", "NS 2", [
+        (44.66249, -63.62983), (44.66351, -63.63282), (44.66549, -63.63579), (44.66735, -63.63805),
+        (44.66937, -63.64037), (44.67144, -63.6427), (44.67341, -63.64497), (44.67511, -63.64745),
+        (44.67749, -63.64932), (44.67952, -63.65158), (44.68017, -63.65517), (44.68135, -63.65884),
+        (44.68333, -63.66099), (44.68603, -63.65944), (44.69068, -63.65989), (44.69405, -63.66091),
+        (44.69819, -63.66102)], 40),
 ]
+
+
+def point_on_road(index: int, t: float) -> tuple[float, float]:
+    """The point a fraction t (0..1) of the way along an offline road, measured along its path."""
+    path = OFFLINE_ROADS[index][3]
+    legs = [math.dist(a, b) for a, b in zip(path, path[1:])]
+    goal = max(0.0, min(1.0, t)) * sum(legs)
+    for i, leg in enumerate(legs):
+        if goal <= leg or i == len(legs) - 1:
+            (a, b), f = (path[i], path[i + 1]), min(1.0, goal / leg) if leg else 0.0
+            return round(a[0] + f * (b[0] - a[0]), 6), round(a[1] + f * (b[1] - a[1]), 6)
+        goal -= leg
+    return path[-1]
 PROVINCIAL = "Nova Scotia Public Works"
 _lock = threading.Lock()
 _last_call = 0.0
@@ -42,8 +62,8 @@ def _offline(lat: float, lon: float) -> dict:
     for name, province, (a, b, c, d) in OFFLINE_REGIONS:
         if a <= lat <= b and c <= lon <= d:
             out.update(municipality=name, province=province, country="Canada")
-    for name, cls, ref, pa, pb, buf in OFFLINE_ROADS:
-        if _seg_distance_m((lat, lon), pa, pb) <= buf:
+    for name, cls, ref, path, buf in OFFLINE_ROADS:
+        if min(_seg_distance_m((lat, lon), a, b) for a, b in zip(path, path[1:])) <= buf:
             out.update(road=name, road_class=cls, road_ref=ref, address=f"{name} near {lat:.5f}, {lon:.5f}")
     return out
 
