@@ -163,14 +163,58 @@ async function router() {
   $("#crumb-current").textContent = title;
   document.title = `${title} · RoadSense`;
   $("#sidebar").classList.remove("open");
+  const activeLink = $(`#nav a[data-route="${route}"]`);
+  let group = activeLink?.previousElementSibling;
+  while (group && !group.classList.contains("nav-label")) group = group.previousElementSibling;
+  $(".page-head-text").dataset.eyebrow = group?.textContent || "Workspace";
+  document.body.classList.add("loading");
   current = document.createElement("div");
+  current.className = "ns-stagger";
   current.innerHTML = `<div class="grid kpis">${'<div class="card kpi"><div class="skeleton" style="width:45%"></div><div class="skeleton" style="width:30%;height:24px;margin-top:14px"></div></div>'.repeat(3)}</div>
     <div class="card card-body section"><div class="skeleton" style="width:40%"></div><div class="skeleton" style="width:70%;margin-top:12px"></div><div class="skeleton" style="width:55%;margin-top:12px"></div></div>`;
   main.replaceChildren(current);
   const mine = current;
   try { await render(params); } catch (e) { mine.innerHTML = errorState(e); }
+  if (mine === current) { document.body.classList.remove("loading"); animateView(mine); }
   refreshChrome();
 }
+
+/* ---------- motion: numbers count up, cards get a pointer spotlight, the evidence photo gets a scan line ---------- */
+const STILL = matchMedia("(prefers-reduced-motion: reduce)");
+function animateView(root) {
+  $$(".card", root).forEach((c) => c.classList.add("ns-spot"));
+  $$(".detail-photo", root).forEach((img) => {
+    if (img.parentElement.classList.contains("ns-scan")) return;
+    const wrap = document.createElement("div");
+    wrap.className = "ns-scan";
+    img.replaceWith(wrap);
+    wrap.append(img);
+  });
+  if (STILL.matches) return;
+  $$(".kpi .value, .funnel .n", root).forEach((el) => {
+    const node = [...el.childNodes].find((n) => n.nodeType === 3 && /\d/.test(n.textContent));
+    if (!node) return;
+    const text = node.textContent.trim();
+    const target = Number(text.replace(/[^\d.]/g, ""));
+    if (!Number.isFinite(target) || target === 0 || /[^\d,.\s%]/.test(text)) return;
+    const suffix = text.endsWith("%") ? "%" : "";
+    const start = performance.now(), dur = 900;
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / dur), eased = 1 - Math.pow(1 - t, 3);
+      node.textContent = num(Math.round(target * eased)) + suffix;
+      if (t < 1 && node.isConnected) requestAnimationFrame(step);
+    };
+    node.textContent = "0" + suffix;
+    requestAnimationFrame(step);
+  });
+}
+document.addEventListener("pointermove", (e) => {
+  const card = e.target.closest?.(".ns-spot");
+  if (!card) return;
+  const r = card.getBoundingClientRect();
+  card.style.setProperty("--ns-x", `${e.clientX - r.left}px`);
+  card.style.setProperty("--ns-y", `${e.clientY - r.top}px`);
+}, { passive: true });
 
 const errorState = (e) => `<div class="card empty"><span class="empty-ic" style="color:var(--red-text)">${icon("alert")}</span><b>Couldn't load this page</b><div class="small">${esc(e.message)}</div><div class="small" style="margin-top:8px">Is the agent service running? Start everything with <code>python scripts/run_all.py</code>.</div><button class="btn btn-sm" style="margin-top:12px" onclick="router()">${icon("refresh")}Retry</button></div>`;
 const emptyState = (ic, title, text, action = "") => `<div class="empty"><span class="empty-ic">${icon(ic)}</span><b>${esc(title)}</b><div class="small">${text}</div>${action}</div>`;
@@ -252,7 +296,7 @@ function tripsTable(trips) {
 }
 
 /* ---------- Map ---------- */
-const MAP_COLORS = { pending_approval: "#f59e0b", approved: "#4f46e5", submitted: "#8b5cf6", fixed: "#10b981", rejected: "#9aa3b2" };
+const MAP_COLORS = { pending_approval: "#ffb547", approved: "#7ab8ff", submitted: "#b89cff", fixed: "#5bd18b", rejected: "#8a929e" };
 function drawMap(id, reports, { zoom = 15, interactive = true } = {}) {
   const el = document.getElementById(id);
   if (!el || !window.L) return;
@@ -262,7 +306,8 @@ function drawMap(id, reports, { zoom = 15, interactive = true } = {}) {
   const pts = [];
   for (const r of reports) {
     const c = MAP_COLORS[r.status] || "#667085";
-    L.circleMarker([r.lat, r.lon], { radius: 6 + Math.min(r.confirmations, 4) * 2, color: "#fff", weight: 2, fillColor: c, fillOpacity: .9 })
+    L.circleMarker([r.lat, r.lon], { radius: 6 + Math.min(r.confirmations, 4) * 2, color: getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() || "#fff",
+      weight: 2, fillColor: c, fillOpacity: .95, className: r.status === "pending_approval" ? "ns-pending" : "" })
       .bindPopup(`<b>#${r.id} ${esc(r.class_name)}</b><br>${esc(r.address || "")}<br>${esc(authority(r.jurisdiction))} · ${esc(STATUS[r.status]?.[0] || r.status)}<br>${r.confirmations} driver(s)<br><a href="#/reports?id=${r.id}">Open report</a>`)
       .addTo(m);
     pts.push([r.lat, r.lon]);
@@ -904,9 +949,10 @@ document.addEventListener("keydown", (e) => {
 if (/Mac|iPhone|iPad/.test(navigator.platform)) $("#mod-key").textContent = "⌘";
 
 function toggleTheme() {
-  const dark = document.documentElement.dataset.theme === "dark" || (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+  const dark = document.documentElement.dataset.theme !== "light"; // Night Shift is the default; Daylight is opt-in
   document.documentElement.dataset.theme = dark ? "light" : "dark";
   try { localStorage.setItem("rs-theme", document.documentElement.dataset.theme); } catch (e) {}
+  if (maps.length && session.user) router(); // map markers take their outline from the theme
 }
 
 /* ---------- boot ---------- */

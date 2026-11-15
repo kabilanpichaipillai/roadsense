@@ -1,3 +1,26 @@
+# RoadSense Design System v3 "Night Shift"
+
+v3 gives the signed-in app the public home page's language. What changed from v2:
+
+- **Theme.** Night Shift (dark asphalt surfaces) is the default; Daylight is the opt-in light theme
+  (`data-theme="light"`, toggled from the top bar or the command palette). Only the semantic layer changes per theme.
+- **Accent.** Road-paint amber (`--primary: #FFB547`) replaces indigo. Text on amber is asphalt (`--on-primary`).
+  Status hues are kept and shifted for contrast on dark surfaces.
+- **Type.** Space Grotesk (`--display`) for headings, page titles and big numbers; Inter for everything else;
+  JetBrains Mono for eyebrows, table headers and ids.
+- **Motion** (all off under `prefers-reduced-motion`):
+  - Pages enter as a staggered stream of cards (`.ns-stagger`); KPI and funnel numbers count up; funnel and meter
+    bars drive in from the left.
+  - The active nav item and the selected review item carry a moving lane line; the top bar shows a dashed road-paint
+    progress line while a page loads (`body.loading`).
+  - Cards get a pointer spotlight (`.ns-spot`); the evidence photo gets a scan line (`.ns-scan`).
+  - On the map, tiles are dimmed in the dark theme (`--map-tiles`) and reports awaiting review pulse (`.ns-pending`).
+- **Ambient.** A faint street grid and a warm glow sit behind every page.
+
+The v2 notes below still describe the token layers, components and patterns; read colours and fonts through v3.
+
+---
+
 # RoadSense Design System v2
 
 The web app (`roadsense/web/static`) is a single page with no build step. The design system is plain CSS custom
