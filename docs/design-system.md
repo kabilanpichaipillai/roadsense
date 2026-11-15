@@ -14,7 +14,8 @@ v3 gives the signed-in app the public home page's language. What changed from v2
   - The active nav item and the selected review item carry a moving lane line; the top bar shows a dashed road-paint
     progress line while a page loads (`body.loading`).
   - Cards get a pointer spotlight (`.ns-spot`); the evidence photo gets a scan line (`.ns-scan`).
-  - On the map, tiles are dimmed in the dark theme (`--map-tiles`) and reports awaiting review pulse (`.ns-pending`).
+  - On the map, the base map follows the theme (Esri Dark Gray or Light Gray canvas, with a street-label layer) and reports
+    awaiting review pulse (`.ns-pending`).
 - **Ambient.** A faint street grid and a warm glow sit behind every page.
 
 The v2 notes below still describe the token layers, components and patterns; read colours and fonts through v3.

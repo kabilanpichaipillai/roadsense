@@ -302,7 +302,12 @@ function drawMap(id, reports, { zoom = 15, interactive = true } = {}) {
   if (!el || !window.L) return;
   const center = reports.length ? [reports[0].lat, reports[0].lon] : [44.6425, -63.578];
   const m = L.map(el, { zoomControl: interactive, scrollWheelZoom: interactive, attributionControl: true }).setView(center, zoom);
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(m);
+  // Esri canvas basemaps: muted greys so the status markers carry the colour. Dark Gray for Night Shift, Light Gray
+  // for Daylight, each with its own street-label layer on top.
+  const tone = document.documentElement.dataset.theme === "light" ? "Light" : "Dark";
+  const esri = (layer) => `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_${tone}_Gray_${layer}/MapServer/tile/{z}/{y}/{x}`;
+  L.tileLayer(esri("Base"), { maxZoom: 19, maxNativeZoom: 16, attribution: "Tiles © Esri, HERE, Garmin, © OpenStreetMap contributors" }).addTo(m);
+  L.tileLayer(esri("Reference"), { maxZoom: 19, maxNativeZoom: 16 }).addTo(m);
   const pts = [];
   for (const r of reports) {
     const c = MAP_COLORS[r.status] || "#667085";
