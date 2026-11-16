@@ -91,7 +91,7 @@ def create_or_merge(event_id: str, severity: str, jurisdiction: str, rationale: 
             result = reports.create_or_merge(
                 conn, event_id, sev["severity"], place.get("address"), place.get("municipality"),
                 settings.dedupe_radius_m, actor="agent:triage", jurisdiction=chosen,
-                rationale=_clean_text(rationale, 300), p1_candidate=sev["p1_candidate"], band=sev["band"],
+                rationale=_clean_text(rationale, 300), band=sev["band"],
                 road_class=place.get("road_class"), road_name=place.get("road"))
         except ValueError as e:
             raise ToolError(str(e)) from e
@@ -142,7 +142,7 @@ def list_reports(status: str | None = None, trip_id: str | None = None, limit: i
     with session() as conn:
         rows = conn.execute(sql + " ORDER BY priority DESC LIMIT ?", [*args, min(limit, 100)]).fetchall()
     keys = ("id", "class_name", "severity", "confirmations", "priority", "address", "jurisdiction", "status",
-            "p1_candidate", "class_disputed", "width_m", "draft_description")
+            "class_disputed", "width_m", "draft_description")
     return {"reports": [{k: r[k] for k in keys} for r in rows]}
 
 

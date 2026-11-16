@@ -70,8 +70,9 @@ def test_camera_projects_detection_ahead_of_the_car():
     assert haversine_m(44.64, -63.58, lat, lon) == pytest.approx(near["forward_m"], rel=0.01) and lon > -63.58
 
 
-def test_width_drives_hrm_priority_1():
-    assert reports.estimate_severity("D40", 0.01, 0.8, 5, width_m=0.30)["p1_candidate"] is True
+def test_pothole_width_drives_severity():
+    high = reports.estimate_severity("D40", 0.01, 0.8, 5, width_m=0.30)
+    assert high["severity"] == "high" and "p1_candidate" not in high
     assert reports.estimate_severity("D40", 0.01, 0.8, 5, width_m=0.15)["severity"] == "medium"
 
 

@@ -124,7 +124,23 @@ function describe(a) {
     case a.action === "signed_in": return ["Signed in", ""];
     case a.action === "trip_done": return [`Finished trip ${subj}`, d?.summary || ""];
     case a.action === "plan": return ["Plan", typeof d === "string" ? d : ""];
-    case a.action === "answer": return ["Answer", d?.content || ""];
+    case a.action === "answer": {
+      // The Follow-up agent answers in JSON; say what it found instead of printing it
+      let j = null; try { j = JSON.parse(d?.content || ""); } catch {}
+      if (j && typeof j === "object" && "checked" in j) {
+        const fixed = (j.fixed || []).length;
+        return ["Checked requests sent to the city", `${j.checked} checked · ${fixed ? `${fixed} repaired` : "no repairs yet"}`];
+      }
+      if (j && Array.isArray(j.reports)) {
+        const n = j.reports.length;
+        return [`Finished ${n} report${n === 1 ? "" : "s"}`, j.reports.map((x) => x.detail || `#${x.report_id} ${x.outcome || ""}`).join(" · ")];
+      }
+      if (j && typeof j === "object") {
+        const text = j.summary || j.message || Object.entries(j).filter(([, v]) => v !== null && typeof v !== "object").map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(" · ");
+        return ["Answer", text];
+      }
+      return ["Answer", d?.content || ""];
+    }
     case a.action === "task": return ["Received task", typeof d === "string" ? d : ""];
     case a.action === "verify": return ["Verifier check (RT-DETR-L)", d?.reason || ""];
     case a.action === "recheck": return ["Close-up re-check", d?.reason || ""];
@@ -163,15 +179,11 @@ async function router() {
   $("#crumb-current").textContent = title;
   document.title = `${title} · RoadSense`;
   $("#sidebar").classList.remove("open");
-  const activeLink = $(`#nav a[data-route="${route}"]`);
-  let group = activeLink?.previousElementSibling;
-  while (group && !group.classList.contains("nav-label")) group = group.previousElementSibling;
-  $(".page-head-text").dataset.eyebrow = group?.textContent || "Workspace";
   document.body.classList.add("loading");
   current = document.createElement("div");
   current.className = "ns-stagger";
-  current.innerHTML = `<div class="grid kpis">${'<div class="card kpi"><div class="skeleton" style="width:45%"></div><div class="skeleton" style="width:30%;height:24px;margin-top:14px"></div></div>'.repeat(3)}</div>
-    <div class="card card-body section"><div class="skeleton" style="width:40%"></div><div class="skeleton" style="width:70%;margin-top:12px"></div><div class="skeleton" style="width:55%;margin-top:12px"></div></div>`;
+  current.innerHTML = `<div class="card card-body sk-page" aria-busy="true" aria-label="Loading"><div class="skeleton" style="width:22%;height:22px"></div><div class="skeleton" style="width:58%;margin-top:16px"></div><div class="skeleton" style="width:46%;margin-top:10px"></div></div>
+    <div class="card card-body section"><div class="skeleton" style="width:30%"></div><div class="skeleton" style="width:80%;margin-top:14px"></div><div class="skeleton" style="width:72%;margin-top:10px"></div><div class="skeleton" style="width:64%;margin-top:10px"></div></div>`;
   main.replaceChildren(current);
   const mine = current;
   try { await render(params); } catch (e) { mine.innerHTML = errorState(e); }
@@ -267,7 +279,6 @@ async function renderOverview() {
   // 3. Signals: counts that deserve a look, quiet when they are zero
   const sig = (ic, tone, n, label, hint, href) => `<li><a class="ov-sig ${n ? "" : "is-zero"}" href="${href}"><span class="ic ${tone}">${icon(ic)}</span><span class="txt"><b>${label}</b><span>${hint}</span></span><span class="n">${num(n)}</span></a></li>`;
   const signals = [
-    sig("alert", "red", s.priority1_candidates, "Priority 1 candidates", "Width ≥ 25 cm, HRM's 7-day standard", "#/reports"),
     sig("eye", "amber", s.class_disputed, "Damage type disputed", "The two vision models disagree", "#/review"),
     sig("route", "cyan", province, "Routed to the province", "100-series highways, not city 311", "#/authorities"),
     sig("merge", "blue", s.multi_driver_reports, "Seen by 2+ drivers", "Independent confirmations", "#/reports"),
@@ -449,38 +460,58 @@ async function renderReports(params) {
   const id = params.get("id");
   if (id) return renderReportPage(id);
   const filter = params.get("status") || "all";
-  const all = await api("/api/reports");
+  const [all, trips] = await Promise.all([api("/api/reports"), api("/api/trips").catch(() => [])]);
   const list = filter === "all" ? all : all.filter((r) => r.status === filter);
   const count = (s) => all.filter((r) => r.status === s).length;
+  // Group by the trip that first saw each defect, newest trip first
+  const started = Object.fromEntries(trips.map((t) => [t.trip_id, t.started]));
+  const groups = Object.entries(list.reduce((g, r) => ((g[r.trip_id || "unknown"] ||= []).push(r), g), {}))
+    .sort(([a], [b]) => String(started[b] || "").localeCompare(String(started[a] || "")) || b.localeCompare(a));
+  const tally = (rs) => Object.entries(rs.reduce((m, r) => ((m[r.status] = (m[r.status] || 0) + 1), m), {}))
+    .map(([s, n]) => `<span class="tally" data-s="${s}"><i></i>${n} ${esc((STATUS[s]?.[0] || s).toLowerCase())}</span>`).join("");
+  const row = (r) => `<tr class="click" tabindex="0" data-id="${r.id}" data-q="${esc(`${r.class_name} ${r.address || ""} #${r.id} ${authority(r.jurisdiction)} ${r.trip_id || ""}`.toLowerCase())}"><td class="c-thumb"><img class="thumb" loading="lazy" src="/api/media/${encodeURIComponent(r.best_event_id)}.jpg?crop=1" alt=""></td>
+        <td class="c-name"><span class="nowrap"><span class="strong">${esc(r.class_name)}</span> <span class="faint small mono">#${r.id}</span></span><div class="chip-row" style="margin-top:4px">${flags(r)}</div></td>
+        <td class="c-loc">${esc(r.address || "")}</td><td class="c-auth nowrap">${esc(authority(r.jurisdiction))}</td><td class="c-sev">${sevPill(r.severity)}</td>
+        <td class="c-drv" data-label="Drivers">${r.confirmations}</td><td class="c-pri mono" data-label="Priority">${r.priority}</td><td class="c-status">${statusPill(r.status)}</td><td class="c-go">${icon("arrow", "row-arrow")}</td></tr>`;
+  const group = ([trip, rs]) => `<tbody class="trip-group" data-trip="${esc(trip)}">
+      <tr class="group-row"><th colspan="9" scope="rowgroup"><button type="button" class="group-toggle" aria-expanded="true">
+        ${icon("arrow", "chev")}<span class="avatar pill">${icon("video")}</span><span class="g-title"><b class="mono">${esc(trip)}</b><span class="g-meta">${started[trip] ? ago(started[trip]) + " · " : ""}<span class="g-n">${rs.length}</span> report${rs.length === 1 ? "" : "s"}</span></span>
+        <span class="g-tally">${tally(rs)}</span></button></th></tr>
+      ${rs.map(row).join("")}</tbody>`;
   view.innerHTML = `
     <div class="toolbar">
       <div class="tabs" role="tablist">${["all", "pending_approval", "submitted", "fixed", "rejected"].map((s) => `<button role="tab" aria-selected="${s === filter}" class="${s === filter ? "on" : ""}" data-s="${s}">${s === "all" ? "All" : STATUS[s][0]}<span class="n">${s === "all" ? all.length : count(s)}</span></button>`).join("")}</div>
       <span class="spacer"></span>
       <label class="input-icon">${icon("search")}<span class="sr-only">Filter reports</span><input class="input" id="report-q" type="search" placeholder="Filter by damage, street or #id"></label>
     </div>
-    <div class="card card-body flush">${list.length ? `<div class="table-wrap"><table class="table"><thead><tr><th></th><th>Damage</th><th>Location</th><th>Authority</th><th>Severity</th><th>Drivers</th><th>Priority</th><th>Status</th><th></th></tr></thead><tbody>
-      ${list.map((r) => `<tr class="click" tabindex="0" data-id="${r.id}" data-q="${esc(`${r.class_name} ${r.address || ""} #${r.id} ${authority(r.jurisdiction)}`.toLowerCase())}"><td><img class="thumb" loading="lazy" src="/api/media/${encodeURIComponent(r.best_event_id)}.jpg?crop=1" alt=""></td>
-        <td><span class="nowrap"><span class="strong">${esc(r.class_name)}</span> <span class="faint small mono">#${r.id}</span></span><div class="chip-row" style="margin-top:4px">${flags(r)}</div></td>
-        <td>${esc(r.address || "")}</td><td class="nowrap">${esc(authority(r.jurisdiction))}</td><td>${sevPill(r.severity)}</td>
-        <td>${r.confirmations}</td><td class="mono">${r.priority}</td><td>${statusPill(r.status)}</td><td>${icon("arrow", "row-arrow")}</td></tr>`).join("")}</tbody></table></div>
-        <div class="card-foot" id="report-foot">${list.length} report${list.length === 1 ? "" : "s"}</div>`
+    <div class="card card-body flush">${list.length ? `<div class="table-wrap"><table class="table"><thead><tr><th></th><th>Damage</th><th>Location</th><th>Authority</th><th>Severity</th><th>Drivers</th><th>Priority</th><th>Status</th><th></th></tr></thead>
+      ${groups.map(group).join("")}</table></div>
+        <div class="card-foot" id="report-foot">${list.length} report${list.length === 1 ? "" : "s"} from ${groups.length} trip${groups.length === 1 ? "" : "s"}</div>`
       : emptyState("inbox", "No reports here", "Reports appear after a trip is processed.")}</div>`;
   $$(".tabs button").forEach((b) => b.onclick = () => location.hash = `#/reports?status=${b.dataset.s}`);
   $$("tr.click").forEach((tr) => {
     tr.onclick = () => location.hash = `#/reports?id=${tr.dataset.id}`;
     tr.onkeydown = (e) => { if (e.key === "Enter") tr.onclick(); };
   });
-  const q = $("#report-q");
-  q.oninput = () => {
-    const term = q.value.trim().toLowerCase();
-    let shown = 0;
-    $$("tr.click").forEach((tr) => { const hit = !term || tr.dataset.q.includes(term); tr.hidden = !hit; shown += hit; });
-    if ($("#report-foot")) $("#report-foot").textContent = `${shown} of ${list.length} reports`;
+  // A collapsed trip hides its rows; search still looks inside it and reopens a group that has a match
+  const apply = () => {
+    const term = $("#report-q").value.trim().toLowerCase();
+    let shown = 0, tripsShown = 0;
+    $$(".trip-group").forEach((g) => {
+      const btn = $(".group-toggle", g), open = btn.getAttribute("aria-expanded") === "true";
+      let hits = 0;
+      $$("tr.click", g).forEach((tr) => { const hit = !term || tr.dataset.q.includes(term); hits += hit; tr.hidden = !hit || (!open && !term); });
+      g.hidden = !hits;
+      $(".g-n", g).textContent = term ? `${hits} of ${$$("tr.click", g).length}` : $$("tr.click", g).length;
+      shown += hits; tripsShown += !!hits;
+    });
+    if ($("#report-foot")) $("#report-foot").textContent = term ? `${shown} of ${list.length} reports, in ${tripsShown} trip${tripsShown === 1 ? "" : "s"}` : `${list.length} report${list.length === 1 ? "" : "s"} from ${groups.length} trip${groups.length === 1 ? "" : "s"}`;
   };
+  $$(".group-toggle").forEach((b) => b.onclick = () => { b.setAttribute("aria-expanded", b.getAttribute("aria-expanded") !== "true"); apply(); });
+  $("#report-q").oninput = apply;
 }
 
 const flags = (r) => [
-  r.p1_candidate ? `<span class="pill red">P1 candidate</span>` : "",
   r.class_disputed ? `<span class="pill amber">Class disputed</span>` : "",
   r.confirmations > 1 ? `<span class="pill blue">${icon("merge")}${r.confirmations} drivers</span>` : "",
 ].join("");
@@ -506,13 +537,13 @@ function reportDetail(d) {
   const feeds = (d.external || []).filter((x) => x.source !== "city_sr");
   return `
     <div class="card-head"><h2>${esc(r.class_name)} <span class="muted">#${r.id}</span></h2>${statusPill(r.status)}<span class="spacer"></span><span class="muted small">${esc(r.address || "")}</span></div>
-    <div class="card-body grid" style="gap:18px">
-      <div class="grid two" style="gap:18px">
+    <div class="card-body detail">
+      <div class="dgrid">
         <div><img class="detail-photo" src="/api/media/${encodeURIComponent(r.best_event_id)}.jpg" alt="Privacy-blurred frame of the damage">
           <div class="small muted" style="margin-top:6px">${icon("shield", "")} Everything except the damage was blurred on the device before upload.</div></div>
-        <div class="grid" style="align-content:start;gap:12px">
+        <div class="dside">
           ${r.class_disputed ? `<div class="callout amber">${icon("alert")}<div><b>The two models disagree on the damage type.</b> YOLOv8m's label is kept; please check the photo.</div></div>` : ""}
-          ${r.p1_candidate ? `<div class="callout red">${icon("alert")}<div><b>HRM Priority 1 candidate</b>: estimated width ≥ 25 cm. Depth can't be measured from video.</div></div>` : ""}
+          
           ${r.confirmations > 1 ? `<div class="callout blue">${icon("merge")}<div><b>Seen by ${r.confirmations} independent drivers.</b> Repeat sightings were merged instead of filed again.</div></div>` : ""}
           ${city.length ? `<div class="callout amber">${icon("building")}<div><b>The city already has a request here</b> (${city.map((x) => esc(x.id.replace(/^city:/, "#"))).join(", ")}${city[0].status ? ", " + esc(city[0].status) : ""}). Approving files a duplicate unless it adds new evidence.</div></div>` : ""}
           ${feeds.length ? `<div class="callout blue">${icon("layers")}<div><b>Corroborated by ${feeds.length} third-party sighting(s)</b>: ${[...new Set(feeds.map((x) => esc(x.source)))].join(", ")}.</div></div>` : ""}
@@ -529,10 +560,10 @@ function reportDetail(d) {
             <div class="fact"><div class="k">Trend</div><div class="v">${trend.passes > 1 ? `${esc(trend.trend)} <span class="muted small">(${trend.passes} passes)</span>` : `<span class="muted">${trend.passes || 0} pass</span>`}</div></div>
             ${r.approved_by ? `<div class="fact"><div class="k">Approved by</div><div class="v small">${esc(r.approved_by)}</div></div>` : ""}
           </div>
-          ${pending && review ? `<div class="reclass"><label class="small muted" for="reclass">Damage type</label><select id="reclass" class="input input-sm">${Object.entries(CLASS_LABELS).map(([c, n]) => `<option value="${c}" ${c === r.class_code ? "selected" : ""}>${esc(n)} (${c})</option>`).join("")}</select><button class="btn btn-sm" id="reclass-save" disabled>Correct type</button></div>` : ""}
+          ${pending && review ? `<div class="reclass"><label class="small muted" for="reclass">Wrong damage type?</label><select id="reclass" class="input input-sm">${Object.entries(CLASS_LABELS).map(([c, n]) => `<option value="${c}" ${c === r.class_code ? "selected" : ""}>${esc(n)} (${c})</option>`).join("")}</select><button class="btn btn-sm" id="reclass-save" disabled>Correct type</button></div>` : ""}
         </div>
       </div>
-      <div class="grid two" style="gap:18px">
+      <div class="dgrid dgrid-even">
         <div><h3 class="h3">Why the agents decided this</h3>
           ${trail.length ? `<ul class="timeline">${trail.map((a) => { const [what, why] = describe(a); return `<li>${avatar(a.actor)}<div class="who">${esc(what)} <span class="muted small">· ${esc(actor(a.actor)[0])} · ${ago(a.ts)}</span></div>${why ? `<div class="say">${esc(why).slice(0, 400)}</div>` : ""}</li>`; }).join("")}</ul>` : `<div class="muted">No decisions recorded.</div>`}
           ${r.rationale ? `<div class="callout blue" style="margin-top:4px">${icon("route")}<div><b>Routing:</b> ${esc(r.rationale)}</div></div>` : ""}
@@ -544,7 +575,7 @@ function reportDetail(d) {
             <dt>Location</dt><dd>${esc(p.address_string)}<div class="muted mono">${p.lat}, ${p.long}</div></dd>
             <dt>Description</dt><dd>${esc(p.description)}</dd>
             <dt>Photo</dt><dd><span class="muted">Privacy-blurred frame · signed link, valid ${esc(String(Math.max(0, Math.round((Number(new URL(p.media_url).searchParams.get("exp") || 0) * 1000 - Date.now()) / 864e5))))} more days</span></dd>
-            <dt>Attributes</dt><dd>${esc(p.attributes.severity)} severity · ${p.attributes.confirmations} confirmation(s)${p.attributes.p1_candidate ? " · P1 candidate" : ""}</dd>
+            <dt>Attributes</dt><dd>${esc(p.attributes.severity)} severity · ${p.attributes.confirmations} confirmation(s)</dd>
           </dl><div class="hash">${icon("lock")}<span>SHA-256 <code>${esc(d.payload_hash.slice(0, 16))}…</code> ${pending ? "is locked when you approve: any later change blocks sending." : r.service_request_id ? `· request <b>${esc(r.service_request_id)}</b>` : ""}</span></div></div>
         </div>
       </div>
@@ -647,9 +678,17 @@ async function renderTrips(params) {
         <form class="card-body grid" id="trip-form" style="gap:18px">
           <label class="dropzone" id="drop"><span class="dz-icon">${icon("upload")}</span><b id="drop-title">Drop a dashcam video here, or click to choose</b><span class="muted small">MP4, MOV, AVI or MKV · up to 500 MB</span>
             <input type="file" id="video" accept=".mp4,.mov,.avi,.mkv,video/*" class="sr-only" required></label>
-          <div class="field"><label for="gps">GPS track</label><input type="file" id="gps" accept=".gpx,.csv">
-            <span class="muted small">GPX, or CSV with <code>time,lat,lon</code>. Phone GPS logger apps export GPX.</span></div>
-          <label class="switch"><input type="checkbox" id="simulate" checked><span>No GPS file: simulate a drive along Spring Garden Rd, Halifax</span></label>
+          <fieldset class="gps-set">
+            <legend>GPS track</legend>
+            <label class="switch"><input type="checkbox" id="simulate" checked aria-controls="gps"><span>No GPS file: simulate a drive along Spring Garden Rd, Halifax</span></label>
+            <div class="file-pick" id="gps-pick">
+              <label class="btn" for="gps">${icon("pin")}Choose GPS file</label>
+              <input type="file" id="gps" accept=".gpx,.csv" class="sr-only">
+              <span class="file-name" id="gps-name">No file chosen</span>
+              <button type="button" class="btn btn-ghost btn-sm" id="gps-clear" hidden aria-label="Remove GPS file">${icon("x")}</button>
+            </div>
+            <span class="muted small" id="gps-hint">GPX, or CSV with <code>time,lat,lon</code>. Phone GPS logger apps export GPX.</span>
+          </fieldset>
           <div style="display:flex;gap:10px;align-items:center"><button class="btn btn-primary btn-lg" id="start">${icon("upload")}Analyse trip</button>
             <span class="muted small">Only blurred frames of damage leave the device.</span></div>
         </form></div>
@@ -667,14 +706,31 @@ async function renderTrips(params) {
   ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
   ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
   drop.addEventListener("drop", (e) => { video.files = e.dataTransfer.files; video.onchange(); });
-  $("#gps").onchange = () => { if ($("#gps").files[0]) $("#simulate").checked = false; };
+  // The GPS picker only means something when the drive is not simulated: grey it out (and drop any file) while it is
+  const gps = $("#gps"), sim = $("#simulate");
+  const syncGps = () => {
+    const off = sim.checked;
+    if (off) gps.value = "";
+    gps.disabled = off;
+    $("#gps-pick").classList.toggle("is-disabled", off);
+    $("#gps-pick label").setAttribute("aria-disabled", off);
+    $("#gps-name").textContent = gps.files[0]?.name || (off ? "Not needed while simulating" : "No file chosen");
+    $("#gps-clear").hidden = !gps.files[0];
+    $("#gps-hint").innerHTML = off ? "Turn off simulation to attach a GPX or CSV track from the drive."
+      : "GPX, or CSV with <code>time,lat,lon</code>. Phone GPS logger apps export GPX.";
+  };
+  sim.onchange = syncGps;
+  gps.onchange = syncGps;
+  $("#gps-clear").onclick = () => { gps.value = ""; syncGps(); };
+  syncGps();
   $("#trip-form").onsubmit = async (ev) => {
     ev.preventDefault();
     if (!video.files[0]) return toast("Choose a dashcam video first.", false);
     const fd = new FormData();
     fd.append("video", video.files[0]);
-    if ($("#gps").files[0]) fd.append("gps", $("#gps").files[0]);
-    fd.append("simulate", $("#simulate").checked);
+    if (!sim.checked && !gps.files[0]) return toast("Choose a GPS file, or turn simulation back on.", false);
+    if (gps.files[0]) fd.append("gps", gps.files[0]);
+    fd.append("simulate", sim.checked);
     $("#start").disabled = true;
     try { const job = await api("/api/trips", { method: "POST", body: fd }); watchJob(job.id); }
     catch (e) { toast(e.message, false); $("#start").disabled = false; }
@@ -717,15 +773,44 @@ async function renderActivity(params) {
   const all = await api("/api/activity?limit=600");
   const who = params.get("actor") || "all";
   const trip = params.get("trip");
+  const tools = params.get("tools") === "1";
   const agentsOnly = all.filter((a) => a.actor.startsWith("agent:") || a.actor === "driver" || a.actor === "fallback");
   let list = who === "all" ? agentsOnly : agentsOnly.filter((a) => a.actor === who);
   if (trip) list = list.filter((a) => (a.subject || "").includes(trip) || (a.detail || "").includes(trip));
+  const hiddenTools = tools ? 0 : list.filter((a) => a.action.startsWith("tool:")).length;
+  if (!tools) list = collapseRuns(list.filter((a) => !a.action.startsWith("tool:") && !(a.actor === "agent:follow_up" && a.action === "task")));
+  const PAGE = 50;
+  const query = (o) => "#/activity?" + new URLSearchParams(Object.entries({ actor: who, trip, tools: tools ? "1" : "", ...o }).filter(([, v]) => v && v !== "all")).toString();
   const groups = ["all", "agent:orchestrator", "agent:vision", "agent:location", "agent:triage", "agent:filing", "agent:follow_up", "driver"];
   view.innerHTML = `
     <div class="toolbar"><div class="tabs" role="tablist">${groups.map((g) => `<button role="tab" aria-selected="${g === who}" class="${g === who ? "on" : ""}" data-g="${g}">${g === "all" ? "All" : esc(actor(g)[0].replace(" agent", ""))}</button>`).join("")}</div>
-    ${trip ? `<span class="pill blue">Trip ${esc(trip)} <a href="#/activity" aria-label="Clear trip filter" style="display:inline-flex;margin-left:2px">${icon("x")}</a></span>` : ""}<span class="spacer"></span><span class="muted small">${list.length > 250 ? `Latest 250 of ${num(list.length)}` : `${num(list.length)} entries`}</span></div>
-    <div class="card">${list.length ? `<ul class="feed">${list.slice(0, 250).map(activityItem).join("")}</ul>` : emptyState("sparkle", "No agent activity yet", "Process a trip with an OpenRouter key to see the agents plan and decide.")}</div>`;
-  $$(".tabs button").forEach((b) => b.onclick = () => location.hash = `#/activity?actor=${encodeURIComponent(b.dataset.g)}${trip ? "&trip=" + encodeURIComponent(trip) : ""}`);
+    ${trip ? `<span class="pill blue">Trip ${esc(trip)} <a href="${query({ trip: "" })}" aria-label="Clear trip filter" style="display:inline-flex;margin-left:2px">${icon("x")}</a></span>` : ""}<span class="spacer"></span>
+      <label class="switch small"><input type="checkbox" id="show-tools" ${tools ? "checked" : ""}><span>Show tool calls${hiddenTools ? ` (${num(hiddenTools)})` : ""}</span></label></div>
+    <div class="card">${list.length ? `<ul class="feed" id="act-feed">${list.slice(0, PAGE).map(activityItem).join("")}</ul>
+      <div class="card-foot act-foot"><span id="act-count">${num(Math.min(PAGE, list.length))} of ${num(list.length)}</span>${list.length > PAGE ? `<button class="btn btn-sm" id="act-more">Show ${num(Math.min(PAGE, list.length - PAGE))} more</button>` : ""}</div>`
+      : emptyState("sparkle", "No agent activity yet", "Process a trip with an OpenRouter key to see the agents plan and decide.")}</div>`;
+  $$(".tabs button").forEach((b) => b.onclick = () => location.hash = query({ actor: b.dataset.g }));
+  $("#show-tools").onchange = (e) => location.hash = query({ tools: e.target.checked ? "1" : "" });
+  let shown = PAGE;
+  const moreBtn = $("#act-more");
+  if (moreBtn) moreBtn.onclick = () => {
+    $("#act-feed").insertAdjacentHTML("beforeend", list.slice(shown, shown + PAGE).map(activityItem).join(""));
+    shown += PAGE;
+    $("#act-count").textContent = `${num(Math.min(shown, list.length))} of ${num(list.length)}`;
+    if (shown >= list.length) moreBtn.remove(); else moreBtn.textContent = `Show ${num(Math.min(PAGE, list.length - shown))} more`;
+  };
+}
+
+// Back-to-back entries that say the same thing (the scheduler's routine checks) read as one line with a count
+function collapseRuns(list) {
+  const out = [];
+  for (const a of list) {
+    const key = a.actor + "|" + describe(a).join("|");
+    const last = out[out.length - 1];
+    if (last && last._key === key) { last._n += 1; last._oldest = a.ts; continue; }
+    out.push({ ...a, _key: key, _n: 1, _oldest: a.ts });
+  }
+  return out;
 }
 
 function activityItem(a) {
@@ -734,7 +819,9 @@ function activityItem(a) {
   const d = parse(a.detail);
   const isTool = a.action.startsWith("tool:");
   const tool = isTool && typeof d === "object" ? `<details class="tool"><summary>Arguments and result</summary><pre>${esc(JSON.stringify(d, null, 2)).slice(0, 4000)}</pre></details>` : "";
-  return `<li>${avatar(a.actor)}<div style="min-width:0;flex:1"><div><span class="what">${esc(what)}</span> <span class="who">· ${esc(who)}</span></div>${why && !isTool ? `<div class="why">${esc(why).slice(0, 900)}</div>` : ""}${tool}</div><span class="when">${ago(a.ts)}</span></li>`;
+  const times = a._n > 1 ? `<span class="x">×${a._n}</span>` : "";
+  const when = a._n > 1 ? `${ago(a._oldest)} – ${ago(a.ts)}` : ago(a.ts);
+  return `<li>${avatar(a.actor)}<div style="min-width:0;flex:1"><div><span class="what">${esc(what)}</span>${times} <span class="who">· ${esc(who)}</span></div>${why && !isTool ? `<div class="why">${esc(why).slice(0, 900)}</div>` : ""}${tool}</div><span class="when">${when}</span></li>`;
 }
 
 /* ---------- Authorities ---------- */
@@ -772,9 +859,14 @@ async function renderSystem() {
   const servers = {};
   h.mcp_tools.forEach((t) => (servers[t.split("_")[0]] ||= []).push(t));
   const NAMES = { detector: "Vision · detector MCP", geo: "Location · geo MCP", reports: "Triage · reports MCP", city: "Filing · municipality MCP" };
-  const guard = (t, d) => `<li>${icon("check")}<div><b>${t}</b><div class="muted small">${d}</div></div></li>`;
+  const guard = (t, d, ok = true) => `<li class="${ok ? "" : "is-warn"}">${icon(ok ? "check" : "alert")}<div><b>${t}</b><div class="muted small">${d}</div></div></li>`;
+  const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d/;
+  const label = (k) => { const t = k.replace(/_/g, " "); return t[0].toUpperCase() + t.slice(1); };
+  const val = (v) => typeof v === "string" && ISO.test(v) ? `<time datetime="${esc(v)}" title="${esc(new Date(v).toLocaleString())}">${ago(v)}</time>`
+    : esc(typeof v === "object" ? JSON.stringify(v) : String(v));
+  const model = (m) => `<span title="${esc(m)}">${esc(m.split("/").pop().replace(/:free$/, ""))}</span>`;
   const dep = s.deployment || {}, warn = dep.warnings || [];
-  const kv = (o) => Object.entries(o || {}).map(([k, v]) => `<div class="fact"><div class="k">${esc(k.replace(/_/g, " "))}</div><div class="v small">${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</div></div>`).join("");
+  const kv = (o, suffix = "") => Object.entries(o || {}).map(([k, v]) => `<div class="fact"><div class="k">${esc(label(k) + suffix)}</div><div class="v small">${val(v)}</div></div>`).join("");
   view.innerHTML = `
     ${warn.length ? `<div class="callout amber section-tight">${icon("alert")}<div><b>${warn.length} setting(s) are not production-ready</b><ul class="warn-list">${warn.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div></div>` : `<div class="callout green section-tight">${icon("check")}<div><b>Production checklist passed</b>: secrets set, sign-in on, data residency enforced, public evidence links.</div></div>`}
     <div class="grid two">
@@ -794,13 +886,13 @@ async function renderSystem() {
           ${guard("Redaction on the device, checked on the server", `Everything except the damage is blurred before upload; the server re-checks every frame${dep.privacy?.face_plate_model ? " and runs a face/plate model" : ""}.`)}
           ${guard("No images to the LLM", "Agents get text metadata only: ids, classes, confidences, positions.")}
           ${guard("Signed, expiring evidence links", `The authority fetches the photo with a link valid for ${dep.privacy?.media_link_days || "?"} days; nothing else is public.`)}
-          ${guard(dep.residency?.mode === "ca" ? "Canadian data residency enforced" : "Data residency not enforced", dep.residency?.mode === "ca" ? "LLM calls only go to allow-listed Canadian endpoints; free prompt-logging models are refused." : "Set ROADSENSE_DATA_RESIDENCY=ca and a Canadian no-retention LLM endpoint before municipal use (PIIDPA / FOIPOP).")}
+          ${guard(dep.residency?.mode === "ca" ? "Canadian data residency enforced" : "Data residency not enforced", dep.residency?.mode === "ca" ? "LLM calls only go to allow-listed Canadian endpoints; free prompt-logging models are refused." : "Set ROADSENSE_DATA_RESIDENCY=ca and a Canadian no-retention LLM endpoint before municipal use (PIIDPA / FOIPOP).", dep.residency?.mode === "ca")}
           ${guard("Retention", `${dep.retention?.keep_raw_video ? "Raw video is kept (development setting)" : "Raw video and GPS deleted after processing"}; rejected photos after ${dep.retention?.rejected_media_days} days; car positions after ${dep.retention?.car_position_days} days.`)}
         </ul></div></div>
         <div class="card"><div class="card-head"><h2>Agent stack</h2><span class="spacer"></span>${h.llm.enabled ? `<span class="pill green"><span class="dot"></span>Live</span>` : `<span class="pill amber">Rule engine</span>`}</div><div class="card-body facts">
           <div class="fact"><div class="k">Mode</div><div class="v">${esc(h.llm.mode)}</div></div>
-          <div class="fact"><div class="k">Primary model</div><div class="v small">${esc(h.llm.models[0])}</div></div>
-          <div class="fact"><div class="k">Fallbacks</div><div class="v small">${h.llm.models.slice(1).map(esc).join("<br>")}</div></div>
+          <div class="fact"><div class="k">Primary model</div><div class="v small">${model(h.llm.models[0])}</div></div>
+          <div class="fact"><div class="k">Fallbacks</div><div class="v small">${h.llm.models.slice(1).map(model).join("<br>") || "None"}</div></div>
           <div class="fact"><div class="k">Quota</div><div class="v small">${llm.configured ? (llm.free_tier ? "Free tier · 50 req/day" : "Paid credits") : "No key"}</div></div>
         </div></div>
       </div>
@@ -808,7 +900,7 @@ async function renderSystem() {
     <div class="grid two section">
       <div class="card"><div class="card-head"><h2>Delivery channels</h2><span class="spacer"></span><span class="muted small">city requests: ${dep.city_requests?.configured ? `${dep.city_requests.count} synced` : "not configured"}</span></div><div class="card-body facts">${Object.entries(dep.channels || {}).map(([a, c]) => `<div class="fact"><div class="k">${esc(authority(a))}</div><div class="v small">${esc(CHANNELS[c] || c)}</div></div>`).join("")}</div>
         ${can("admin") && dep.city_requests?.configured ? `<div class="card-foot"><button class="btn btn-sm" id="sync-city">${icon("refresh")}Sync city requests now</button></div>` : ""}</div>
-      <div class="card"><div class="card-head"><h2>Jobs and scheduler</h2><span class="spacer"></span>${dep.scheduler?.enabled ? `<span class="pill green"><span class="dot"></span>Scheduler on</span>` : `<span class="pill amber">Scheduler off</span>`}</div><div class="card-body facts">${kv(dep.jobs)}${kv(dep.scheduler?.last_run)}<div class="fact"><div class="k">Sign-in</div><div class="v small">${s.auth?.enabled ? (s.auth.sso ? "SSO + password" : "Password") : "Disabled"}</div></div></div></div>
+      <div class="card"><div class="card-head"><h2>Jobs and scheduler</h2><span class="spacer"></span>${dep.scheduler?.enabled ? `<span class="pill green"><span class="dot"></span>Scheduler on</span>` : `<span class="pill amber">Scheduler off</span>`}</div><div class="card-body facts">${kv(dep.jobs, " jobs")}${kv(dep.scheduler?.last_run, " last run")}<div class="fact"><div class="k">Sign-in</div><div class="v small">${s.auth?.enabled ? (s.auth.sso ? "SSO + password" : "Password") : "Disabled"}</div></div></div></div>
     </div>
     <div class="card section"><div class="card-head"><h2>MCP servers and tools</h2><span class="spacer"></span><span class="muted small">${h.mcp_tools.length} tools over stdio</span></div>
       <div class="card-body grid kpis">${Object.entries(servers).map(([k, tools]) => `<div class="server-card"><div class="name">${icon("layers")}${esc(NAMES[k] || k)}<span class="spacer"></span><span class="faint small">${tools.length}</span></div><div class="chip-row">${tools.map((t) => `<span class="pill mono">${esc(t)}</span>`).join("")}</div></div>`).join("")}</div></div>`;
@@ -836,8 +928,8 @@ async function renderConditions() {
       <div class="card kpi"><div class="label">Average index<span class="ic green">${icon("activity")}</span></div><div class="value">${avg.toFixed(0)}</div><div class="hint">Of segments with open defects</div></div>
     </div>
     <div class="callout blue section-tight">${icon("alert")}<div><b>An estimate, not a certified survey.</b> ${esc(c.method)}. Use it to rank where to look; HRM's Pavement Quality Index survey remains the record.</div></div>
-    <div class="card section"><div class="card-head"><h2>Worst segments first</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>Road</th><th>Defects</th><th>Potholes</th><th>P1</th><th style="width:28%">Condition index</th><th>Rating</th><th>Reports</th></tr></thead><tbody>
-      ${segs.map((x) => `<tr><td><b>${esc(x.road)}</b><div class="muted small mono">${x.lat.toFixed(5)}, ${x.lon.toFixed(5)}</div></td><td>${x.defects}</td><td>${x.potholes}</td><td>${x.priority1 ? `<span class="pill red">${x.priority1}</span>` : "0"}</td>
+    <div class="card section"><div class="card-head"><h2>Worst segments first</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>Road</th><th>Defects</th><th>Potholes</th><th style="width:28%">Condition index</th><th>Rating</th><th>Reports</th></tr></thead><tbody>
+      ${segs.map((x) => `<tr><td><b>${esc(x.road)}</b><div class="muted small mono">${x.lat.toFixed(5)}, ${x.lon.toFixed(5)}</div></td><td>${x.defects}</td><td>${x.potholes}</td>
         <td><div class="meter-row"><div class="meter"><span style="width:${x.condition_index}%" class="${tone[x.rating] || ""}"></span></div><span class="mono small">${x.condition_index.toFixed(0)}</span></div></td><td><span class="pill ${tone[x.rating] || ""}">${esc(x.rating)}</span></td>
         <td>${x.report_ids.slice(0, 6).map((id) => `<a href="#/reports?id=${id}" class="mono small">#${id}</a>`).join(" ")}</td></tr>`).join("")}</tbody></table></div></div>`;
 }

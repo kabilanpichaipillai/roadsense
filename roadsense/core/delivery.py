@@ -96,8 +96,7 @@ def _cityworks_submit(payload: dict, info: dict, report: dict | None) -> dict:
         "ProblemSid": info.get("cityworks_problem_sid", 0), "RequestType": info.get("cityworks_request_type"),
         "X": payload["long"], "Y": payload["lat"], "Address": payload["address_string"],
         "Details": payload["description"], "Comments": f"Evidence photo: {payload['media_url']}",
-        "SubmitTo": info.get("cityworks_submit_to"), "Priority": "1" if payload["attributes"].get("p1_candidate")
-        else None, "Text1": json.dumps(payload["attributes"])[:255]})
+        "SubmitTo": info.get("cityworks_submit_to"), "Text1": json.dumps(payload["attributes"])[:255]})
     sr_id = str(value.get("RequestId") or value.get("Id") or "")
     if not sr_id:
         raise DeliveryError("Cityworks did not return a RequestId")

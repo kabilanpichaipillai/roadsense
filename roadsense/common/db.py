@@ -138,7 +138,7 @@ MIGRATIONS = {
                "class_disputed": "INTEGER NOT NULL DEFAULT 0", "rationale": "TEXT", "snap_m": "REAL",
                "jolt_g": "REAL", "server_redacted": "INTEGER NOT NULL DEFAULT 0", "suppressed_by": "INTEGER",
                "road_class": "TEXT", "road_name": "TEXT"},
-    "reports": {"jurisdiction": "TEXT", "channel": "TEXT", "width_m": "REAL", "p1_candidate": "INTEGER DEFAULT 0",
+    "reports": {"jurisdiction": "TEXT", "channel": "TEXT", "width_m": "REAL",
                 "class_disputed": "INTEGER NOT NULL DEFAULT 0", "rationale": "TEXT", "draft_description": "TEXT",
                 "approved_payload_hash": "TEXT", "submitted_payload_hash": "TEXT",
                 # the exact payload the reviewer approved: delivery sends this snapshot, never a rebuilt one

@@ -87,7 +87,7 @@ def recheck(event_id: str) -> dict:
 
 @mcp.tool(name="detector_severity", annotations=READ)
 def severity(event_id: str) -> dict:
-    """Severity (low / medium / high) from damage type, estimated width (HRM Priority 1 is >= 25 cm wide),
+    """Severity (low / medium / high) from damage type, estimated width (a pothole >= 25 cm wide is high),
     confidence and frames seen. Depth cannot be measured from video and is never claimed."""
     with session() as conn:
         event = _event(conn, event_id)

@@ -70,7 +70,7 @@ What each status colour means:
 | blue (primary) | Approved, merged sightings, informational |
 | violet | Sent to an authority, LLM agents |
 | green | Fixed, done, live, guardrail satisfied |
-| red | Priority 1 candidate, failure, destructive |
+| red | High severity, failure, destructive |
 | cyan | Provincial routing (NS Public Works) |
 | gray | Rejected, neutral, rule engine |
 

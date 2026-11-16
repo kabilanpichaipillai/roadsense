@@ -56,7 +56,6 @@ def segments(conn: sqlite3.Connection) -> list[dict]:
         index = max(0.0, round(100 - min(total, 100), 1))
         out.append({"road": name, "lat": sum(lats) / len(lats), "lon": sum(lons) / len(lons), "defects": len(items),
                     "potholes": sum(i["class_code"] == "D40" for i in items),
-                    "priority1": sum(bool(i.get("p1_candidate")) for i in items),
                     "condition_index": index, "rating": rating(index), "report_ids": [i["id"] for i in items],
                     "estimate": True})
     return sorted(out, key=lambda s: s["condition_index"])
