@@ -124,7 +124,23 @@ function describe(a) {
     case a.action === "signed_in": return ["Signed in", ""];
     case a.action === "trip_done": return [`Finished trip ${subj}`, d?.summary || ""];
     case a.action === "plan": return ["Plan", typeof d === "string" ? d : ""];
-    case a.action === "answer": return ["Answer", d?.content || ""];
+    case a.action === "answer": {
+      // The Follow-up agent answers in JSON; say what it found instead of printing it
+      let j = null; try { j = JSON.parse(d?.content || ""); } catch {}
+      if (j && typeof j === "object" && "checked" in j) {
+        const fixed = (j.fixed || []).length;
+        return ["Checked requests sent to the city", `${j.checked} checked · ${fixed ? `${fixed} repaired` : "no repairs yet"}`];
+      }
+      if (j && Array.isArray(j.reports)) {
+        const n = j.reports.length;
+        return [`Finished ${n} report${n === 1 ? "" : "s"}`, j.reports.map((x) => x.detail || `#${x.report_id} ${x.outcome || ""}`).join(" · ")];
+      }
+      if (j && typeof j === "object") {
+        const text = j.summary || j.message || Object.entries(j).filter(([, v]) => v !== null && typeof v !== "object").map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(" · ");
+        return ["Answer", text];
+      }
+      return ["Answer", d?.content || ""];
+    }
     case a.action === "task": return ["Received task", typeof d === "string" ? d : ""];
     case a.action === "verify": return ["Verifier check (RT-DETR-L)", d?.reason || ""];
     case a.action === "recheck": return ["Close-up re-check", d?.reason || ""];
@@ -163,14 +179,54 @@ async function router() {
   $("#crumb-current").textContent = title;
   document.title = `${title} · RoadSense`;
   $("#sidebar").classList.remove("open");
+  document.body.classList.add("loading");
   current = document.createElement("div");
-  current.innerHTML = `<div class="grid kpis">${'<div class="card kpi"><div class="skeleton" style="width:45%"></div><div class="skeleton" style="width:30%;height:24px;margin-top:14px"></div></div>'.repeat(3)}</div>
-    <div class="card card-body section"><div class="skeleton" style="width:40%"></div><div class="skeleton" style="width:70%;margin-top:12px"></div><div class="skeleton" style="width:55%;margin-top:12px"></div></div>`;
+  current.className = "ns-stagger";
+  current.innerHTML = `<div class="card card-body sk-page" aria-busy="true" aria-label="Loading"><div class="skeleton" style="width:22%;height:22px"></div><div class="skeleton" style="width:58%;margin-top:16px"></div><div class="skeleton" style="width:46%;margin-top:10px"></div></div>
+    <div class="card card-body section"><div class="skeleton" style="width:30%"></div><div class="skeleton" style="width:80%;margin-top:14px"></div><div class="skeleton" style="width:72%;margin-top:10px"></div><div class="skeleton" style="width:64%;margin-top:10px"></div></div>`;
   main.replaceChildren(current);
   const mine = current;
   try { await render(params); } catch (e) { mine.innerHTML = errorState(e); }
+  if (mine === current) { document.body.classList.remove("loading"); animateView(mine); }
   refreshChrome();
 }
+
+/* ---------- motion: numbers count up, cards get a pointer spotlight, the evidence photo gets a scan line ---------- */
+const STILL = matchMedia("(prefers-reduced-motion: reduce)");
+function animateView(root) {
+  $$(".card", root).forEach((c) => c.classList.add("ns-spot"));
+  $$(".detail-photo", root).forEach((img) => {
+    if (img.parentElement.classList.contains("ns-scan")) return;
+    const wrap = document.createElement("div");
+    wrap.className = "ns-scan";
+    img.replaceWith(wrap);
+    wrap.append(img);
+  });
+  if (STILL.matches) return;
+  $$(".kpi .value, .funnel .n, .ov-num, .ov-stop .n", root).forEach((el) => {
+    const node = [...el.childNodes].find((n) => n.nodeType === 3 && /\d/.test(n.textContent));
+    if (!node) return;
+    const text = node.textContent.trim();
+    const target = Number(text.replace(/[^\d.]/g, ""));
+    if (!Number.isFinite(target) || target === 0 || /[^\d,.\s%]/.test(text)) return;
+    const suffix = text.endsWith("%") ? "%" : "";
+    const start = performance.now(), dur = 900;
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / dur), eased = 1 - Math.pow(1 - t, 3);
+      node.textContent = num(Math.round(target * eased)) + suffix;
+      if (t < 1 && node.isConnected) requestAnimationFrame(step);
+    };
+    node.textContent = "0" + suffix;
+    requestAnimationFrame(step);
+  });
+}
+document.addEventListener("pointermove", (e) => {
+  const card = e.target.closest?.(".ns-spot");
+  if (!card) return;
+  const r = card.getBoundingClientRect();
+  card.style.setProperty("--ns-x", `${e.clientX - r.left}px`);
+  card.style.setProperty("--ns-y", `${e.clientY - r.top}px`);
+}, { passive: true });
 
 const errorState = (e) => `<div class="card empty"><span class="empty-ic" style="color:var(--red-text)">${icon("alert")}</span><b>Couldn't load this page</b><div class="small">${esc(e.message)}</div><div class="small" style="margin-top:8px">Is the agent service running? Start everything with <code>python scripts/run_all.py</code>.</div><button class="btn btn-sm" style="margin-top:12px" onclick="router()">${icon("refresh")}Retry</button></div>`;
 const emptyState = (ic, title, text, action = "") => `<div class="empty"><span class="empty-ic">${icon(ic)}</span><b>${esc(title)}</b><div class="small">${text}</div>${action}</div>`;
@@ -194,44 +250,110 @@ async function refreshChrome() {
 async function renderOverview() {
   const view = stage();
   const { stats: s, reports, trips, activity } = await api("/api/overview");
-  const reportsN = Object.values(s.reports).reduce((a, b) => a + b, 0);
-  const sent = (s.reports.submitted || 0) + (s.reports.fixed || 0);
-  const confirmed = (s.events.processed || 0) + (s.events.verified || 0);
-  const funnelStage = (n, t, of, prev, d = true) => `<div class="stage"><div class="t">${t}</div><div class="n">${num(n)}${prev != null ? `<span class="rate">${prev ? pct(n / prev) : "–"} of previous</span>` : ""}</div><div class="bar"><i style="width:${of ? Math.max(3, (n / of) * 100) : 0}%"></i></div>${d ? `<span class="delta">${icon("arrow")}</span>` : ""}</div>`;
-  const kpi = (ic, label, value, hint, tone = "") => `<div class="card kpi"><div class="label">${label}<span class="ic ${tone}">${icon(ic)}</span></div><div class="value">${value}</div><div class="hint">${hint}</div></div>`;
+  const by = s.reports || {};
+  const total = Object.values(by).reduce((a, b) => a + b, 0);
+  const pending = by.pending_approval || 0;
+  const confirmed = (s.events?.processed || 0) + (s.events?.verified || 0);
+  const sent = (by.submitted || 0) + (by.fixed || 0);
+  const province = s.authorities?.["Nova Scotia Public Works"] || 0;
+
+  // 1. The queue: the one thing a reviewer does here, and where every report stands
+  const order = ["pending_approval", "approved", "submitted", "delivery_failed", "fixed", "rejected"].filter((k) => by[k]);
+  // The bar is a picture of the legend below it; the legend carries the links and the numbers for every reader
+  const stack = order.map((k) => `<span class="ov-seg" data-s="${k}" style="flex:${by[k]}"></span>`).join("");
+  const legend = order.map((k) => `<li><a href="#/reports?status=${k}" data-s="${k}"><span class="sw"></span>${esc(STATUS[k][0])}<b>${num(by[k])}</b></a></li>`).join("");
+  const queue = pending
+    ? `<div class="ov-num" aria-hidden="true">${num(pending)}</div>
+       <h2 class="ov-lead"><span class="sr-only">${num(pending)} </span>${pending === 1 ? "report waits" : "reports wait"} for your approval</h2>
+       <p class="ov-sub">Nothing reaches Halifax 311 or the province until you approve its exact payload.</p>
+       <div class="ov-actions"><a class="btn btn-primary btn-lg" href="#/review">${icon("inbox")}Start reviewing</a><a class="btn btn-lg" href="#/map">${icon("map")}See them on the map</a></div>`
+    : `<div class="ov-num is-clear" aria-hidden="true">0</div>
+       <h2 class="ov-lead">The review queue is clear</h2>
+       <p class="ov-sub">Upload a dashcam drive and the agents will bring you the next batch.</p>
+       <div class="ov-actions"><a class="btn btn-primary btn-lg" href="#/trips?new=1">${icon("upload")}Upload a trip</a></div>`;
+
+  // 2. The pipeline as a road: four stops, and what fell away between them painted on the asphalt
+  const stop = (n, t, note, tone = "") => `<li class="ov-stop ${tone}"><span class="ov-pin"></span><div class="t">${t}</div><div class="n">${num(n)}</div>${note ? `<div class="note">${note}</div>` : ""}</li>`;
+  const drop = (n, t) => `<li class="ov-drop ${n ? "" : "is-zero"}" aria-label="${n} ${t}"><span>${n ? "−" + num(n) : "0"}</span>${t}</li>`;
+
+  // 3. Signals: counts that deserve a look, quiet when they are zero
+  const sig = (ic, tone, n, label, hint, href) => `<li><a class="ov-sig ${n ? "" : "is-zero"}" href="${href}"><span class="ic ${tone}">${icon(ic)}</span><span class="txt"><b>${label}</b><span>${hint}</span></span><span class="n">${num(n)}</span></a></li>`;
+  const signals = [
+    sig("eye", "amber", s.class_disputed, "Damage type disputed", "The two vision models disagree", "#/review"),
+    sig("route", "cyan", province, "Routed to the province", "100-series highways, not city 311", "#/authorities"),
+    sig("merge", "blue", s.multi_driver_reports, "Seen by 2+ drivers", "Independent confirmations", "#/reports"),
+    sig("wrench", "green", by.fixed || 0, "Repairs confirmed", "Drivers notified", "#/reports?status=fixed"),
+    s.delivery_failed ? sig("alert", "red", s.delivery_failed, "Deliveries failing", "Retrying with back-off", "#/authorities") : "",
+  ].join("");
+
   view.innerHTML = `
-    <div class="card"><div class="card-head"><h2>Pipeline</h2><span class="desc">From detection to the right desk</span><span class="spacer"></span><span class="pill">${icon("video")}${num(s.trips)} trips</span><span class="pill violet">${icon("sparkle")}${s.agent_trips} by LLM agents</span></div>
-      <div class="funnel">${funnelStage(s.detections, "Detections", s.detections)}${funnelStage(confirmed, "Confirmed by Vision agent", s.detections, s.detections)}${funnelStage(reportsN, "Unique reports", s.detections, confirmed)}${funnelStage(sent, "Sent to an authority", s.detections, reportsN, false)}</div></div>
-    <div class="grid kpis section">
-      ${kpi("inbox", "Awaiting your review", num(s.reports.pending_approval), "Nothing leaves without approval", "amber")}
-      ${kpi("merge", "Duplicates merged", num(s.duplicates_merged), `${num(s.multi_driver_reports)} reports confirmed by 2+ drivers`, "blue")}
-      ${kpi("x", "False alarms removed", num(s.false_alarms_removed), "Rejected by verification", "")}
-      ${kpi("route", "Routed to the province", num(s.authorities["Nova Scotia Public Works"]), "Not dumped on city 311", "cyan")}
-      ${kpi("alert", "Priority 1 candidates", num(s.priority1_candidates), "Width ≥ 25 cm (HRM standard)", "red")}
-      ${kpi("wrench", "Repairs confirmed", num(s.reports.fixed), "Drivers notified", "green")}
-    </div>
-    <div class="grid two section">
-      <div class="card"><div class="card-head"><h2>Latest agent decisions</h2><span class="spacer"></span>${more("#/activity", "View all")}</div>
-        ${activity.length ? `<ul class="feed">${activity.map(feedItem).join("")}</ul>` : emptyState("sparkle", "No decisions yet", "Upload a trip to see the agents work.")}</div>
-      <div class="grid" style="align-content:start">
-        <div class="card"><div class="card-head"><h2>Reports map</h2><span class="spacer"></span>${more("#/map", "Open map")}</div><div id="mini-map" class="map-mini"></div></div>
-        <div class="card"><div class="card-head"><h2>Agent usage</h2><span class="spacer"></span><span class="desc">All trips</span></div><div class="card-body facts">
-          <div class="fact"><div class="k">LLM calls</div><div class="v">${num(s.llm_calls)}</div></div>
-          <div class="fact"><div class="k">Tokens</div><div class="v">${num(s.llm_tokens)}</div></div>
-          <div class="fact"><div class="k">Fallback rate</div><div class="v">${pct(s.fallback_rate)}</div></div>
-          <div class="fact"><div class="k">Disputed classes</div><div class="v">${num(s.class_disputed)}</div></div></div></div>
+    <section class="card ov-hero">
+      <div class="ov-queue">${queue}</div>
+      <div class="ov-status">
+        <div class="ov-k">${num(total)} reports by status</div>
+        <div class="ov-stack" aria-hidden="true">${stack || '<span class="ov-seg empty"></span>'}</div>
+        <ul class="ov-legend">${legend}</ul>
       </div>
+    </section>
+    <section class="card ov-road section" aria-labelledby="ov-road-h">
+      <div class="card-head"><h2 id="ov-road-h">From dashcam to the right desk</h2><span class="spacer"></span>
+        <span class="desc">${num(s.trips)} trips · ${num(s.llm_calls)} LLM calls · ${num(s.llm_tokens)} tokens · ${pct(s.fallback_rate)} decided by the rule engine</span></div>
+      <ol class="ov-lane">
+        ${stop(s.detections, "Spotted on the dashcam", "Edge model, faces and plates blurred")}
+        ${drop(s.false_alarms_removed, "false alarms dropped")}
+        ${stop(confirmed, "Confirmed by the Vision agent", "Second model checks every crop")}
+        ${drop(s.duplicates_merged, "merged as duplicates")}
+        ${stop(total, "Unique reports", pending ? `${num(pending)} waiting for you` : "None waiting", pending ? "is-hot" : "")}
+        ${drop(total - sent, "not sent yet")}
+        ${stop(sent, "Sent to an authority", province ? `${num(province)} to the province` : "Via Open311")}
+      </ol>
+    </section>
+    <div class="ov-row section">
+      <section class="card ov-map"><div class="card-head"><h2>Where the damage is</h2><span class="spacer"></span>${more("#/map", "Open full map")}</div><div id="mini-map" class="map-mini"></div></section>
+      <section class="card"><div class="card-head"><h2>Worth a look</h2></div><ul class="ov-sigs">${signals}</ul></section>
     </div>
-    <div class="card section"><div class="card-head"><h2>Recent trips</h2><span class="spacer"></span>${more("#/trips", "All trips")}</div>
-      ${tripsTable(trips)}</div>`;
+    <div class="ov-row section">
+      <section class="card"><div class="card-head"><h2>Latest decisions</h2><span class="spacer"></span>${more("#/activity", "Full audit log")}</div>
+        ${activity.length ? `<ol class="ov-timeline">${groupActivity(activity).slice(0, 6).map(timelineItem).join("")}</ol>` : emptyState("sparkle", "No decisions yet", "Upload a trip to see the agents work.")}</section>
+      <section class="card"><div class="card-head"><h2>Recent trips</h2><span class="spacer"></span>${more("#/trips", "All trips")}</div>
+        ${trips.length ? `<ul class="ov-trips">${trips.map(tripItem).join("")}</ul>` : emptyState("video", "No trips yet", "Upload a dashcam video with its GPS track.", `<a class="btn btn-primary" style="margin-top:12px" href="#/trips?new=1">${icon("upload")}New trip</a>`)}</section>
+    </div>`;
   drawMap("mini-map", reports, { zoom: 14, interactive: false });
 }
 
-function feedItem(a) {
-  const [who] = actor(a.actor);
-  const [what, why] = describe(a);
-  const link = a.subject?.startsWith("report:") ? `#/reports?id=${a.subject.slice(7)}` : "";
-  return `<li>${avatar(a.actor)}<div style="min-width:0;flex:1"><div><span class="what">${esc(what)}</span> <span class="who">· ${esc(who)}</span></div>${why ? `<div class="why">${esc(why).slice(0, 360)}</div>` : ""}${link ? `<a class="link-more" style="margin-top:4px" href="${link}">Open report${icon("arrow")}</a>` : ""}</div><span class="when">${ago(a.ts)}</span></li>`;
+// Consecutive decisions of the same kind by the same actor read as one line: "Rejected by a reviewer · 4 reports"
+function groupActivity(list) {
+  const out = [];
+  for (const a of list) {
+    const last = out[out.length - 1];
+    if (last && last.action === a.action && last.actor === a.actor && !a.action.startsWith("trip_")) last.items.push(a);
+    else out.push({ ...a, items: [a] });
+  }
+  return out;
+}
+
+function timelineItem(g) {
+  const [who] = actor(g.actor);
+  const [what, why] = describe(g);
+  const ids = g.items.map((a) => a.subject?.startsWith("report:") ? a.subject.slice(7) : null).filter(Boolean);
+  const many = g.items.length > 1;
+  // One report: the title is the link. A group: a chip per report it touched.
+  const title = !many && ids.length ? `<a class="what" href="#/reports?id=${ids[0]}">${esc(what)}${what.includes(`#${ids[0]}`) ? "" : ` · #${ids[0]}`}</a>` : `<span class="what">${esc(what)}</span>`;
+  const chips = many ? ids.map((id) => `<a class="ov-chip" href="#/reports?id=${id}">#${id}</a>`).join("") : "";
+  return `<li>${avatar(g.actor)}<div class="body"><div class="head">${title}${many ? `<span class="x">×${g.items.length}</span>` : ""}<span class="when">${ago(g.ts)}</span></div>
+    <div class="who">${esc(who)}</div>${!many && why ? `<div class="why">${esc(why)}</div>` : ""}${chips ? `<div class="chips">${chips}</div>` : ""}</div></li>`;
+}
+
+function tripItem(t) {
+  const run = t.run || {};
+  const agents = run.mode?.startsWith("agents");
+  const waiting = !run.mode && t.processed + t.rejected < t.events;
+  const state = agents ? `<span class="pill violet">${icon("sparkle")}Agents</span>` : run.mode ? `<span class="pill">${icon("cpu")}Rule engine</span>`
+    : waiting ? `<button class="btn btn-sm" data-process="${esc(t.trip_id)}">${icon("refresh")}Process now</button>` : `<span class="pill green">${icon("check")}Done</span>`;
+  const share = t.events ? Math.round((t.processed / t.events) * 100) : 0;
+  return `<li><span class="ic">${icon("video")}</span><div class="body"><div class="id mono">${esc(t.trip_id)}</div>
+    <div class="meta">${num(t.events)} detections · ${num(t.processed)} confirmed${t.rejected ? ` · ${num(t.rejected)} dropped` : ""} · ${ago(t.started)}</div>
+    <div class="ov-meter" aria-hidden="true"><i style="width:${share}%"></i></div></div>${state}</li>`;
 }
 
 document.addEventListener("click", async (ev) => {
@@ -252,24 +374,69 @@ function tripsTable(trips) {
 }
 
 /* ---------- Map ---------- */
-const MAP_COLORS = { pending_approval: "#f59e0b", approved: "#4f46e5", submitted: "#8b5cf6", fixed: "#10b981", rejected: "#9aa3b2" };
+const MAP_COLORS = { pending_approval: "#ffb547", approved: "#7ab8ff", submitted: "#b89cff", fixed: "#5bd18b", rejected: "#8a929e" };
 function drawMap(id, reports, { zoom = 15, interactive = true } = {}) {
   const el = document.getElementById(id);
   if (!el || !window.L) return;
   const center = reports.length ? [reports[0].lat, reports[0].lon] : [44.6425, -63.578];
   const m = L.map(el, { zoomControl: interactive, scrollWheelZoom: interactive, attributionControl: true }).setView(center, zoom);
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(m);
-  const pts = [];
-  for (const r of reports) {
-    const c = MAP_COLORS[r.status] || "#667085";
-    L.circleMarker([r.lat, r.lon], { radius: 6 + Math.min(r.confirmations, 4) * 2, color: "#fff", weight: 2, fillColor: c, fillOpacity: .9 })
-      .bindPopup(`<b>#${r.id} ${esc(r.class_name)}</b><br>${esc(r.address || "")}<br>${esc(authority(r.jurisdiction))} · ${esc(STATUS[r.status]?.[0] || r.status)}<br>${r.confirmations} driver(s)<br><a href="#/reports?id=${r.id}">Open report</a>`)
-      .addTo(m);
-    pts.push([r.lat, r.lon]);
-  }
+  // Esri canvas basemaps: muted greys so the status markers carry the colour. Dark Gray for Night Shift, Light Gray
+  // for Daylight, each with its own street-label layer on top.
+  const tone = document.documentElement.dataset.theme === "light" ? "Light" : "Dark";
+  const esri = (layer) => `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_${tone}_Gray_${layer}/MapServer/tile/{z}/{y}/{x}`;
+  L.tileLayer(esri("Base"), { maxZoom: 19, maxNativeZoom: 16, attribution: "Tiles © Esri, HERE, Garmin, © OpenStreetMap contributors" }).addTo(m);
+  L.tileLayer(esri("Reference"), { maxZoom: 19, maxNativeZoom: 16 }).addTo(m);
+  const outline = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() || "#fff";
+  const single = (r) => L.circleMarker([r.lat, r.lon], { radius: 6 + Math.min(r.confirmations, 4) * 2, color: outline,
+    weight: 2, fillColor: MAP_COLORS[r.status] || "#667085", fillOpacity: .95, className: r.status === "pending_approval" ? "ns-pending" : "" })
+    .bindPopup(`<b>#${r.id} ${esc(r.class_name)}</b><br>${esc(r.address || "")}<br>${esc(authority(r.jurisdiction))} · ${esc(STATUS[r.status]?.[0] || r.status)}<br>${r.confirmations} driver(s)<br><a href="#/reports?id=${r.id}">Open report</a>`);
+  const layer = L.layerGroup().addTo(m);
+  // Reports closer than CLUSTER_PX on screen merge into one circle sized by count; it splits again as you zoom in.
+  const draw = () => {
+    layer.clearLayers();
+    for (const group of clusterReports(m, reports)) {
+      if (group.length === 1) { layer.addLayer(single(group[0])); continue; }
+      layer.addLayer(clusterMarker(m, group));
+    }
+  };
+  m.on("zoomend", draw);
+  const pts = reports.map((r) => [r.lat, r.lon]);
   if (pts.length > 1) m.fitBounds(pts, { padding: [30, 30], maxZoom: 16 });
+  draw();
   maps.push(m);
   setTimeout(() => m.invalidateSize(), 50);
+}
+
+const CLUSTER_PX = 44, CLUSTER_OFF_ZOOM = 18;
+function clusterReports(m, reports) {
+  if (m.getZoom() >= CLUSTER_OFF_ZOOM) return reports.map((r) => [r]);
+  const groups = [];
+  for (const r of reports) {
+    const p = m.project([r.lat, r.lon]);
+    const near = groups.find((g) => g.at.distanceTo(p) <= CLUSTER_PX);
+    if (near) { near.items.push(r); near.at = near.at.multiplyBy(near.items.length - 1).add(p).divideBy(near.items.length); }
+    else groups.push({ at: p, items: [r] });
+  }
+  return groups.map((g) => g.items);
+}
+
+/* The cluster takes the most urgent status inside it, so a single report awaiting review is never hidden. */
+const URGENCY = ["delivery_failed", "pending_approval", "approved", "submitted", "fixed", "rejected"];
+function clusterMarker(m, group) {
+  const lat = group.reduce((a, r) => a + r.lat, 0) / group.length, lon = group.reduce((a, r) => a + r.lon, 0) / group.length;
+  const status = URGENCY.find((s) => group.some((r) => r.status === s)) || group[0].status;
+  const size = Math.round(30 + Math.min(Math.sqrt(group.length) * 7, 34));
+  const pending = group.filter((r) => r.status === "pending_approval").length;
+  const label = `${group.length} reports${pending ? `, ${pending} awaiting review` : ""}`;
+  const icon = L.divIcon({ className: "ns-cluster-wrap", iconSize: [size, size],
+    html: `<span class="ns-cluster ${status === "pending_approval" ? "is-pending" : ""}" style="--c:${MAP_COLORS[status] || "#667085"};width:${size}px;height:${size}px" aria-label="${esc(label)}">${group.length}</span>` });
+  const marker = L.marker([lat, lon], { icon, title: label, keyboard: true, riseOnHover: true });
+  marker.on("click", () => {
+    const bounds = L.latLngBounds(group.map((r) => [r.lat, r.lon]));
+    if (bounds.getNorthEast().equals(bounds.getSouthWest())) m.setView(bounds.getCenter(), CLUSTER_OFF_ZOOM);
+    else m.fitBounds(bounds, { padding: [48, 48], maxZoom: CLUSTER_OFF_ZOOM });
+  });
+  return marker;
 }
 
 async function renderMap(params) {
@@ -293,38 +460,58 @@ async function renderReports(params) {
   const id = params.get("id");
   if (id) return renderReportPage(id);
   const filter = params.get("status") || "all";
-  const all = await api("/api/reports");
+  const [all, trips] = await Promise.all([api("/api/reports"), api("/api/trips").catch(() => [])]);
   const list = filter === "all" ? all : all.filter((r) => r.status === filter);
   const count = (s) => all.filter((r) => r.status === s).length;
+  // Group by the trip that first saw each defect, newest trip first
+  const started = Object.fromEntries(trips.map((t) => [t.trip_id, t.started]));
+  const groups = Object.entries(list.reduce((g, r) => ((g[r.trip_id || "unknown"] ||= []).push(r), g), {}))
+    .sort(([a], [b]) => String(started[b] || "").localeCompare(String(started[a] || "")) || b.localeCompare(a));
+  const tally = (rs) => Object.entries(rs.reduce((m, r) => ((m[r.status] = (m[r.status] || 0) + 1), m), {}))
+    .map(([s, n]) => `<span class="tally" data-s="${s}"><i></i>${n} ${esc((STATUS[s]?.[0] || s).toLowerCase())}</span>`).join("");
+  const row = (r) => `<tr class="click" tabindex="0" data-id="${r.id}" data-q="${esc(`${r.class_name} ${r.address || ""} #${r.id} ${authority(r.jurisdiction)} ${r.trip_id || ""}`.toLowerCase())}"><td class="c-thumb"><img class="thumb" loading="lazy" src="/api/media/${encodeURIComponent(r.best_event_id)}.jpg?crop=1" alt=""></td>
+        <td class="c-name"><span class="nowrap"><span class="strong">${esc(r.class_name)}</span> <span class="faint small mono">#${r.id}</span></span><div class="chip-row" style="margin-top:4px">${flags(r)}</div></td>
+        <td class="c-loc">${esc(r.address || "")}</td><td class="c-auth nowrap">${esc(authority(r.jurisdiction))}</td><td class="c-sev">${sevPill(r.severity)}</td>
+        <td class="c-drv" data-label="Drivers">${r.confirmations}</td><td class="c-pri mono" data-label="Priority">${r.priority}</td><td class="c-status">${statusPill(r.status)}</td><td class="c-go">${icon("arrow", "row-arrow")}</td></tr>`;
+  const group = ([trip, rs]) => `<tbody class="trip-group" data-trip="${esc(trip)}">
+      <tr class="group-row"><th colspan="9" scope="rowgroup"><button type="button" class="group-toggle" aria-expanded="true">
+        ${icon("arrow", "chev")}<span class="avatar pill">${icon("video")}</span><span class="g-title"><b class="mono">${esc(trip)}</b><span class="g-meta">${started[trip] ? ago(started[trip]) + " · " : ""}<span class="g-n">${rs.length}</span> report${rs.length === 1 ? "" : "s"}</span></span>
+        <span class="g-tally">${tally(rs)}</span></button></th></tr>
+      ${rs.map(row).join("")}</tbody>`;
   view.innerHTML = `
     <div class="toolbar">
       <div class="tabs" role="tablist">${["all", "pending_approval", "submitted", "fixed", "rejected"].map((s) => `<button role="tab" aria-selected="${s === filter}" class="${s === filter ? "on" : ""}" data-s="${s}">${s === "all" ? "All" : STATUS[s][0]}<span class="n">${s === "all" ? all.length : count(s)}</span></button>`).join("")}</div>
       <span class="spacer"></span>
       <label class="input-icon">${icon("search")}<span class="sr-only">Filter reports</span><input class="input" id="report-q" type="search" placeholder="Filter by damage, street or #id"></label>
     </div>
-    <div class="card card-body flush">${list.length ? `<div class="table-wrap"><table class="table"><thead><tr><th></th><th>Damage</th><th>Location</th><th>Authority</th><th>Severity</th><th>Drivers</th><th>Priority</th><th>Status</th><th></th></tr></thead><tbody>
-      ${list.map((r) => `<tr class="click" tabindex="0" data-id="${r.id}" data-q="${esc(`${r.class_name} ${r.address || ""} #${r.id} ${authority(r.jurisdiction)}`.toLowerCase())}"><td><img class="thumb" loading="lazy" src="/api/media/${encodeURIComponent(r.best_event_id)}.jpg?crop=1" alt=""></td>
-        <td><span class="nowrap"><span class="strong">${esc(r.class_name)}</span> <span class="faint small mono">#${r.id}</span></span><div class="chip-row" style="margin-top:4px">${flags(r)}</div></td>
-        <td>${esc(r.address || "")}</td><td class="nowrap">${esc(authority(r.jurisdiction))}</td><td>${sevPill(r.severity)}</td>
-        <td>${r.confirmations}</td><td class="mono">${r.priority}</td><td>${statusPill(r.status)}</td><td>${icon("arrow", "row-arrow")}</td></tr>`).join("")}</tbody></table></div>
-        <div class="card-foot" id="report-foot">${list.length} report${list.length === 1 ? "" : "s"}</div>`
+    <div class="card card-body flush">${list.length ? `<div class="table-wrap"><table class="table"><thead><tr><th></th><th>Damage</th><th>Location</th><th>Authority</th><th>Severity</th><th>Drivers</th><th>Priority</th><th>Status</th><th></th></tr></thead>
+      ${groups.map(group).join("")}</table></div>
+        <div class="card-foot" id="report-foot">${list.length} report${list.length === 1 ? "" : "s"} from ${groups.length} trip${groups.length === 1 ? "" : "s"}</div>`
       : emptyState("inbox", "No reports here", "Reports appear after a trip is processed.")}</div>`;
   $$(".tabs button").forEach((b) => b.onclick = () => location.hash = `#/reports?status=${b.dataset.s}`);
   $$("tr.click").forEach((tr) => {
     tr.onclick = () => location.hash = `#/reports?id=${tr.dataset.id}`;
     tr.onkeydown = (e) => { if (e.key === "Enter") tr.onclick(); };
   });
-  const q = $("#report-q");
-  q.oninput = () => {
-    const term = q.value.trim().toLowerCase();
-    let shown = 0;
-    $$("tr.click").forEach((tr) => { const hit = !term || tr.dataset.q.includes(term); tr.hidden = !hit; shown += hit; });
-    if ($("#report-foot")) $("#report-foot").textContent = `${shown} of ${list.length} reports`;
+  // A collapsed trip hides its rows; search still looks inside it and reopens a group that has a match
+  const apply = () => {
+    const term = $("#report-q").value.trim().toLowerCase();
+    let shown = 0, tripsShown = 0;
+    $$(".trip-group").forEach((g) => {
+      const btn = $(".group-toggle", g), open = btn.getAttribute("aria-expanded") === "true";
+      let hits = 0;
+      $$("tr.click", g).forEach((tr) => { const hit = !term || tr.dataset.q.includes(term); hits += hit; tr.hidden = !hit || (!open && !term); });
+      g.hidden = !hits;
+      $(".g-n", g).textContent = term ? `${hits} of ${$$("tr.click", g).length}` : $$("tr.click", g).length;
+      shown += hits; tripsShown += !!hits;
+    });
+    if ($("#report-foot")) $("#report-foot").textContent = term ? `${shown} of ${list.length} reports, in ${tripsShown} trip${tripsShown === 1 ? "" : "s"}` : `${list.length} report${list.length === 1 ? "" : "s"} from ${groups.length} trip${groups.length === 1 ? "" : "s"}`;
   };
+  $$(".group-toggle").forEach((b) => b.onclick = () => { b.setAttribute("aria-expanded", b.getAttribute("aria-expanded") !== "true"); apply(); });
+  $("#report-q").oninput = apply;
 }
 
 const flags = (r) => [
-  r.p1_candidate ? `<span class="pill red">P1 candidate</span>` : "",
   r.class_disputed ? `<span class="pill amber">Class disputed</span>` : "",
   r.confirmations > 1 ? `<span class="pill blue">${icon("merge")}${r.confirmations} drivers</span>` : "",
 ].join("");
@@ -350,13 +537,13 @@ function reportDetail(d) {
   const feeds = (d.external || []).filter((x) => x.source !== "city_sr");
   return `
     <div class="card-head"><h2>${esc(r.class_name)} <span class="muted">#${r.id}</span></h2>${statusPill(r.status)}<span class="spacer"></span><span class="muted small">${esc(r.address || "")}</span></div>
-    <div class="card-body grid" style="gap:18px">
-      <div class="grid two" style="gap:18px">
+    <div class="card-body detail">
+      <div class="dgrid">
         <div><img class="detail-photo" src="/api/media/${encodeURIComponent(r.best_event_id)}.jpg" alt="Privacy-blurred frame of the damage">
           <div class="small muted" style="margin-top:6px">${icon("shield", "")} Everything except the damage was blurred on the device before upload.</div></div>
-        <div class="grid" style="align-content:start;gap:12px">
+        <div class="dside">
           ${r.class_disputed ? `<div class="callout amber">${icon("alert")}<div><b>The two models disagree on the damage type.</b> YOLOv8m's label is kept; please check the photo.</div></div>` : ""}
-          ${r.p1_candidate ? `<div class="callout red">${icon("alert")}<div><b>HRM Priority 1 candidate</b>: estimated width ≥ 25 cm. Depth can't be measured from video.</div></div>` : ""}
+          
           ${r.confirmations > 1 ? `<div class="callout blue">${icon("merge")}<div><b>Seen by ${r.confirmations} independent drivers.</b> Repeat sightings were merged instead of filed again.</div></div>` : ""}
           ${city.length ? `<div class="callout amber">${icon("building")}<div><b>The city already has a request here</b> (${city.map((x) => esc(x.id.replace(/^city:/, "#"))).join(", ")}${city[0].status ? ", " + esc(city[0].status) : ""}). Approving files a duplicate unless it adds new evidence.</div></div>` : ""}
           ${feeds.length ? `<div class="callout blue">${icon("layers")}<div><b>Corroborated by ${feeds.length} third-party sighting(s)</b>: ${[...new Set(feeds.map((x) => esc(x.source)))].join(", ")}.</div></div>` : ""}
@@ -373,10 +560,10 @@ function reportDetail(d) {
             <div class="fact"><div class="k">Trend</div><div class="v">${trend.passes > 1 ? `${esc(trend.trend)} <span class="muted small">(${trend.passes} passes)</span>` : `<span class="muted">${trend.passes || 0} pass</span>`}</div></div>
             ${r.approved_by ? `<div class="fact"><div class="k">Approved by</div><div class="v small">${esc(r.approved_by)}</div></div>` : ""}
           </div>
-          ${pending && review ? `<div class="reclass"><label class="small muted" for="reclass">Damage type</label><select id="reclass" class="input input-sm">${Object.entries(CLASS_LABELS).map(([c, n]) => `<option value="${c}" ${c === r.class_code ? "selected" : ""}>${esc(n)} (${c})</option>`).join("")}</select><button class="btn btn-sm" id="reclass-save" disabled>Correct type</button></div>` : ""}
+          ${pending && review ? `<div class="reclass"><label class="small muted" for="reclass">Wrong damage type?</label><select id="reclass" class="input input-sm">${Object.entries(CLASS_LABELS).map(([c, n]) => `<option value="${c}" ${c === r.class_code ? "selected" : ""}>${esc(n)} (${c})</option>`).join("")}</select><button class="btn btn-sm" id="reclass-save" disabled>Correct type</button></div>` : ""}
         </div>
       </div>
-      <div class="grid two" style="gap:18px">
+      <div class="dgrid dgrid-even">
         <div><h3 class="h3">Why the agents decided this</h3>
           ${trail.length ? `<ul class="timeline">${trail.map((a) => { const [what, why] = describe(a); return `<li>${avatar(a.actor)}<div class="who">${esc(what)} <span class="muted small">· ${esc(actor(a.actor)[0])} · ${ago(a.ts)}</span></div>${why ? `<div class="say">${esc(why).slice(0, 400)}</div>` : ""}</li>`; }).join("")}</ul>` : `<div class="muted">No decisions recorded.</div>`}
           ${r.rationale ? `<div class="callout blue" style="margin-top:4px">${icon("route")}<div><b>Routing:</b> ${esc(r.rationale)}</div></div>` : ""}
@@ -388,7 +575,7 @@ function reportDetail(d) {
             <dt>Location</dt><dd>${esc(p.address_string)}<div class="muted mono">${p.lat}, ${p.long}</div></dd>
             <dt>Description</dt><dd>${esc(p.description)}</dd>
             <dt>Photo</dt><dd><span class="muted">Privacy-blurred frame · signed link, valid ${esc(String(Math.max(0, Math.round((Number(new URL(p.media_url).searchParams.get("exp") || 0) * 1000 - Date.now()) / 864e5))))} more days</span></dd>
-            <dt>Attributes</dt><dd>${esc(p.attributes.severity)} severity · ${p.attributes.confirmations} confirmation(s)${p.attributes.p1_candidate ? " · P1 candidate" : ""}</dd>
+            <dt>Attributes</dt><dd>${esc(p.attributes.severity)} severity · ${p.attributes.confirmations} confirmation(s)</dd>
           </dl><div class="hash">${icon("lock")}<span>SHA-256 <code>${esc(d.payload_hash.slice(0, 16))}…</code> ${pending ? "is locked when you approve: any later change blocks sending." : r.service_request_id ? `· request <b>${esc(r.service_request_id)}</b>` : ""}</span></div></div>
         </div>
       </div>
@@ -457,9 +644,11 @@ async function renderReview(params) {
       <div class="card" id="detail"><div class="card-body"><div class="skeleton" style="width:50%"></div></div></div></div>`;
   const ids = pending.map((r) => r.id);
   const open = async (id) => {
+    if (view !== stage()) return; // the user has already moved to another page
     $$(".inbox-item").forEach((x) => x.classList.toggle("on", Number(x.dataset.id) === id));
     history.replaceState(null, "", `#/review?id=${id}`);
     const d = await api(`/api/reports/${id}`);
+    if (view !== stage()) return;
     $("#detail").innerHTML = reportDetail(d);
     bindDetail(d, (stay) => renderReview(new URLSearchParams(`id=${stay ? id : ids[ids.indexOf(id) + 1] || ""}`)));
     reviewKeys.current = id;
@@ -489,9 +678,17 @@ async function renderTrips(params) {
         <form class="card-body grid" id="trip-form" style="gap:18px">
           <label class="dropzone" id="drop"><span class="dz-icon">${icon("upload")}</span><b id="drop-title">Drop a dashcam video here, or click to choose</b><span class="muted small">MP4, MOV, AVI or MKV · up to 500 MB</span>
             <input type="file" id="video" accept=".mp4,.mov,.avi,.mkv,video/*" class="sr-only" required></label>
-          <div class="field"><label for="gps">GPS track</label><input type="file" id="gps" accept=".gpx,.csv">
-            <span class="muted small">GPX, or CSV with <code>time,lat,lon</code>. Phone GPS logger apps export GPX.</span></div>
-          <label class="switch"><input type="checkbox" id="simulate" checked><span>No GPS file: simulate a drive along Spring Garden Rd, Halifax</span></label>
+          <fieldset class="gps-set">
+            <legend>GPS track</legend>
+            <label class="switch"><input type="checkbox" id="simulate" checked aria-controls="gps"><span>No GPS file: simulate a drive along Spring Garden Rd, Halifax</span></label>
+            <div class="file-pick" id="gps-pick">
+              <label class="btn" for="gps">${icon("pin")}Choose GPS file</label>
+              <input type="file" id="gps" accept=".gpx,.csv" class="sr-only">
+              <span class="file-name" id="gps-name">No file chosen</span>
+              <button type="button" class="btn btn-ghost btn-sm" id="gps-clear" hidden aria-label="Remove GPS file">${icon("x")}</button>
+            </div>
+            <span class="muted small" id="gps-hint">GPX, or CSV with <code>time,lat,lon</code>. Phone GPS logger apps export GPX.</span>
+          </fieldset>
           <div style="display:flex;gap:10px;align-items:center"><button class="btn btn-primary btn-lg" id="start">${icon("upload")}Analyse trip</button>
             <span class="muted small">Only blurred frames of damage leave the device.</span></div>
         </form></div>
@@ -509,14 +706,31 @@ async function renderTrips(params) {
   ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
   ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
   drop.addEventListener("drop", (e) => { video.files = e.dataTransfer.files; video.onchange(); });
-  $("#gps").onchange = () => { if ($("#gps").files[0]) $("#simulate").checked = false; };
+  // The GPS picker only means something when the drive is not simulated: grey it out (and drop any file) while it is
+  const gps = $("#gps"), sim = $("#simulate");
+  const syncGps = () => {
+    const off = sim.checked;
+    if (off) gps.value = "";
+    gps.disabled = off;
+    $("#gps-pick").classList.toggle("is-disabled", off);
+    $("#gps-pick label").setAttribute("aria-disabled", off);
+    $("#gps-name").textContent = gps.files[0]?.name || (off ? "Not needed while simulating" : "No file chosen");
+    $("#gps-clear").hidden = !gps.files[0];
+    $("#gps-hint").innerHTML = off ? "Turn off simulation to attach a GPX or CSV track from the drive."
+      : "GPX, or CSV with <code>time,lat,lon</code>. Phone GPS logger apps export GPX.";
+  };
+  sim.onchange = syncGps;
+  gps.onchange = syncGps;
+  $("#gps-clear").onclick = () => { gps.value = ""; syncGps(); };
+  syncGps();
   $("#trip-form").onsubmit = async (ev) => {
     ev.preventDefault();
     if (!video.files[0]) return toast("Choose a dashcam video first.", false);
     const fd = new FormData();
     fd.append("video", video.files[0]);
-    if ($("#gps").files[0]) fd.append("gps", $("#gps").files[0]);
-    fd.append("simulate", $("#simulate").checked);
+    if (!sim.checked && !gps.files[0]) return toast("Choose a GPS file, or turn simulation back on.", false);
+    if (gps.files[0]) fd.append("gps", gps.files[0]);
+    fd.append("simulate", sim.checked);
     $("#start").disabled = true;
     try { const job = await api("/api/trips", { method: "POST", body: fd }); watchJob(job.id); }
     catch (e) { toast(e.message, false); $("#start").disabled = false; }
@@ -559,15 +773,44 @@ async function renderActivity(params) {
   const all = await api("/api/activity?limit=600");
   const who = params.get("actor") || "all";
   const trip = params.get("trip");
+  const tools = params.get("tools") === "1";
   const agentsOnly = all.filter((a) => a.actor.startsWith("agent:") || a.actor === "driver" || a.actor === "fallback");
   let list = who === "all" ? agentsOnly : agentsOnly.filter((a) => a.actor === who);
   if (trip) list = list.filter((a) => (a.subject || "").includes(trip) || (a.detail || "").includes(trip));
+  const hiddenTools = tools ? 0 : list.filter((a) => a.action.startsWith("tool:")).length;
+  if (!tools) list = collapseRuns(list.filter((a) => !a.action.startsWith("tool:") && !(a.actor === "agent:follow_up" && a.action === "task")));
+  const PAGE = 50;
+  const query = (o) => "#/activity?" + new URLSearchParams(Object.entries({ actor: who, trip, tools: tools ? "1" : "", ...o }).filter(([, v]) => v && v !== "all")).toString();
   const groups = ["all", "agent:orchestrator", "agent:vision", "agent:location", "agent:triage", "agent:filing", "agent:follow_up", "driver"];
   view.innerHTML = `
     <div class="toolbar"><div class="tabs" role="tablist">${groups.map((g) => `<button role="tab" aria-selected="${g === who}" class="${g === who ? "on" : ""}" data-g="${g}">${g === "all" ? "All" : esc(actor(g)[0].replace(" agent", ""))}</button>`).join("")}</div>
-    ${trip ? `<span class="pill blue">Trip ${esc(trip)} <a href="#/activity" aria-label="Clear trip filter" style="display:inline-flex;margin-left:2px">${icon("x")}</a></span>` : ""}<span class="spacer"></span><span class="muted small">${list.length > 250 ? `Latest 250 of ${num(list.length)}` : `${num(list.length)} entries`}</span></div>
-    <div class="card">${list.length ? `<ul class="feed">${list.slice(0, 250).map(activityItem).join("")}</ul>` : emptyState("sparkle", "No agent activity yet", "Process a trip with an OpenRouter key to see the agents plan and decide.")}</div>`;
-  $$(".tabs button").forEach((b) => b.onclick = () => location.hash = `#/activity?actor=${encodeURIComponent(b.dataset.g)}${trip ? "&trip=" + encodeURIComponent(trip) : ""}`);
+    ${trip ? `<span class="pill blue">Trip ${esc(trip)} <a href="${query({ trip: "" })}" aria-label="Clear trip filter" style="display:inline-flex;margin-left:2px">${icon("x")}</a></span>` : ""}<span class="spacer"></span>
+      <label class="switch small"><input type="checkbox" id="show-tools" ${tools ? "checked" : ""}><span>Show tool calls${hiddenTools ? ` (${num(hiddenTools)})` : ""}</span></label></div>
+    <div class="card">${list.length ? `<ul class="feed" id="act-feed">${list.slice(0, PAGE).map(activityItem).join("")}</ul>
+      <div class="card-foot act-foot"><span id="act-count">${num(Math.min(PAGE, list.length))} of ${num(list.length)}</span>${list.length > PAGE ? `<button class="btn btn-sm" id="act-more">Show ${num(Math.min(PAGE, list.length - PAGE))} more</button>` : ""}</div>`
+      : emptyState("sparkle", "No agent activity yet", "Process a trip with an OpenRouter key to see the agents plan and decide.")}</div>`;
+  $$(".tabs button").forEach((b) => b.onclick = () => location.hash = query({ actor: b.dataset.g }));
+  $("#show-tools").onchange = (e) => location.hash = query({ tools: e.target.checked ? "1" : "" });
+  let shown = PAGE;
+  const moreBtn = $("#act-more");
+  if (moreBtn) moreBtn.onclick = () => {
+    $("#act-feed").insertAdjacentHTML("beforeend", list.slice(shown, shown + PAGE).map(activityItem).join(""));
+    shown += PAGE;
+    $("#act-count").textContent = `${num(Math.min(shown, list.length))} of ${num(list.length)}`;
+    if (shown >= list.length) moreBtn.remove(); else moreBtn.textContent = `Show ${num(Math.min(PAGE, list.length - shown))} more`;
+  };
+}
+
+// Back-to-back entries that say the same thing (the scheduler's routine checks) read as one line with a count
+function collapseRuns(list) {
+  const out = [];
+  for (const a of list) {
+    const key = a.actor + "|" + describe(a).join("|");
+    const last = out[out.length - 1];
+    if (last && last._key === key) { last._n += 1; last._oldest = a.ts; continue; }
+    out.push({ ...a, _key: key, _n: 1, _oldest: a.ts });
+  }
+  return out;
 }
 
 function activityItem(a) {
@@ -576,7 +819,9 @@ function activityItem(a) {
   const d = parse(a.detail);
   const isTool = a.action.startsWith("tool:");
   const tool = isTool && typeof d === "object" ? `<details class="tool"><summary>Arguments and result</summary><pre>${esc(JSON.stringify(d, null, 2)).slice(0, 4000)}</pre></details>` : "";
-  return `<li>${avatar(a.actor)}<div style="min-width:0;flex:1"><div><span class="what">${esc(what)}</span> <span class="who">· ${esc(who)}</span></div>${why && !isTool ? `<div class="why">${esc(why).slice(0, 900)}</div>` : ""}${tool}</div><span class="when">${ago(a.ts)}</span></li>`;
+  const times = a._n > 1 ? `<span class="x">×${a._n}</span>` : "";
+  const when = a._n > 1 ? `${ago(a._oldest)} – ${ago(a.ts)}` : ago(a.ts);
+  return `<li>${avatar(a.actor)}<div style="min-width:0;flex:1"><div><span class="what">${esc(what)}</span>${times} <span class="who">· ${esc(who)}</span></div>${why && !isTool ? `<div class="why">${esc(why).slice(0, 900)}</div>` : ""}${tool}</div><span class="when">${when}</span></li>`;
 }
 
 /* ---------- Authorities ---------- */
@@ -614,9 +859,14 @@ async function renderSystem() {
   const servers = {};
   h.mcp_tools.forEach((t) => (servers[t.split("_")[0]] ||= []).push(t));
   const NAMES = { detector: "Vision · detector MCP", geo: "Location · geo MCP", reports: "Triage · reports MCP", city: "Filing · municipality MCP" };
-  const guard = (t, d) => `<li>${icon("check")}<div><b>${t}</b><div class="muted small">${d}</div></div></li>`;
+  const guard = (t, d, ok = true) => `<li class="${ok ? "" : "is-warn"}">${icon(ok ? "check" : "alert")}<div><b>${t}</b><div class="muted small">${d}</div></div></li>`;
+  const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d/;
+  const label = (k) => { const t = k.replace(/_/g, " "); return t[0].toUpperCase() + t.slice(1); };
+  const val = (v) => typeof v === "string" && ISO.test(v) ? `<time datetime="${esc(v)}" title="${esc(new Date(v).toLocaleString())}">${ago(v)}</time>`
+    : esc(typeof v === "object" ? JSON.stringify(v) : String(v));
+  const model = (m) => `<span title="${esc(m)}">${esc(m.split("/").pop().replace(/:free$/, ""))}</span>`;
   const dep = s.deployment || {}, warn = dep.warnings || [];
-  const kv = (o) => Object.entries(o || {}).map(([k, v]) => `<div class="fact"><div class="k">${esc(k.replace(/_/g, " "))}</div><div class="v small">${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</div></div>`).join("");
+  const kv = (o, suffix = "") => Object.entries(o || {}).map(([k, v]) => `<div class="fact"><div class="k">${esc(label(k) + suffix)}</div><div class="v small">${val(v)}</div></div>`).join("");
   view.innerHTML = `
     ${warn.length ? `<div class="callout amber section-tight">${icon("alert")}<div><b>${warn.length} setting(s) are not production-ready</b><ul class="warn-list">${warn.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div></div>` : `<div class="callout green section-tight">${icon("check")}<div><b>Production checklist passed</b>: secrets set, sign-in on, data residency enforced, public evidence links.</div></div>`}
     <div class="grid two">
@@ -636,13 +886,13 @@ async function renderSystem() {
           ${guard("Redaction on the device, checked on the server", `Everything except the damage is blurred before upload; the server re-checks every frame${dep.privacy?.face_plate_model ? " and runs a face/plate model" : ""}.`)}
           ${guard("No images to the LLM", "Agents get text metadata only: ids, classes, confidences, positions.")}
           ${guard("Signed, expiring evidence links", `The authority fetches the photo with a link valid for ${dep.privacy?.media_link_days || "?"} days; nothing else is public.`)}
-          ${guard(dep.residency?.mode === "ca" ? "Canadian data residency enforced" : "Data residency not enforced", dep.residency?.mode === "ca" ? "LLM calls only go to allow-listed Canadian endpoints; free prompt-logging models are refused." : "Set ROADSENSE_DATA_RESIDENCY=ca and a Canadian no-retention LLM endpoint before municipal use (PIIDPA / FOIPOP).")}
+          ${guard(dep.residency?.mode === "ca" ? "Canadian data residency enforced" : "Data residency not enforced", dep.residency?.mode === "ca" ? "LLM calls only go to allow-listed Canadian endpoints; free prompt-logging models are refused." : "Set ROADSENSE_DATA_RESIDENCY=ca and a Canadian no-retention LLM endpoint before municipal use (PIIDPA / FOIPOP).", dep.residency?.mode === "ca")}
           ${guard("Retention", `${dep.retention?.keep_raw_video ? "Raw video is kept (development setting)" : "Raw video and GPS deleted after processing"}; rejected photos after ${dep.retention?.rejected_media_days} days; car positions after ${dep.retention?.car_position_days} days.`)}
         </ul></div></div>
         <div class="card"><div class="card-head"><h2>Agent stack</h2><span class="spacer"></span>${h.llm.enabled ? `<span class="pill green"><span class="dot"></span>Live</span>` : `<span class="pill amber">Rule engine</span>`}</div><div class="card-body facts">
           <div class="fact"><div class="k">Mode</div><div class="v">${esc(h.llm.mode)}</div></div>
-          <div class="fact"><div class="k">Primary model</div><div class="v small">${esc(h.llm.models[0])}</div></div>
-          <div class="fact"><div class="k">Fallbacks</div><div class="v small">${h.llm.models.slice(1).map(esc).join("<br>")}</div></div>
+          <div class="fact"><div class="k">Primary model</div><div class="v small">${model(h.llm.models[0])}</div></div>
+          <div class="fact"><div class="k">Fallbacks</div><div class="v small">${h.llm.models.slice(1).map(model).join("<br>") || "None"}</div></div>
           <div class="fact"><div class="k">Quota</div><div class="v small">${llm.configured ? (llm.free_tier ? "Free tier · 50 req/day" : "Paid credits") : "No key"}</div></div>
         </div></div>
       </div>
@@ -650,7 +900,7 @@ async function renderSystem() {
     <div class="grid two section">
       <div class="card"><div class="card-head"><h2>Delivery channels</h2><span class="spacer"></span><span class="muted small">city requests: ${dep.city_requests?.configured ? `${dep.city_requests.count} synced` : "not configured"}</span></div><div class="card-body facts">${Object.entries(dep.channels || {}).map(([a, c]) => `<div class="fact"><div class="k">${esc(authority(a))}</div><div class="v small">${esc(CHANNELS[c] || c)}</div></div>`).join("")}</div>
         ${can("admin") && dep.city_requests?.configured ? `<div class="card-foot"><button class="btn btn-sm" id="sync-city">${icon("refresh")}Sync city requests now</button></div>` : ""}</div>
-      <div class="card"><div class="card-head"><h2>Jobs and scheduler</h2><span class="spacer"></span>${dep.scheduler?.enabled ? `<span class="pill green"><span class="dot"></span>Scheduler on</span>` : `<span class="pill amber">Scheduler off</span>`}</div><div class="card-body facts">${kv(dep.jobs)}${kv(dep.scheduler?.last_run)}<div class="fact"><div class="k">Sign-in</div><div class="v small">${s.auth?.enabled ? (s.auth.sso ? "SSO + password" : "Password") : "Disabled"}</div></div></div></div>
+      <div class="card"><div class="card-head"><h2>Jobs and scheduler</h2><span class="spacer"></span>${dep.scheduler?.enabled ? `<span class="pill green"><span class="dot"></span>Scheduler on</span>` : `<span class="pill amber">Scheduler off</span>`}</div><div class="card-body facts">${kv(dep.jobs, " jobs")}${kv(dep.scheduler?.last_run, " last run")}<div class="fact"><div class="k">Sign-in</div><div class="v small">${s.auth?.enabled ? (s.auth.sso ? "SSO + password" : "Password") : "Disabled"}</div></div></div></div>
     </div>
     <div class="card section"><div class="card-head"><h2>MCP servers and tools</h2><span class="spacer"></span><span class="muted small">${h.mcp_tools.length} tools over stdio</span></div>
       <div class="card-body grid kpis">${Object.entries(servers).map(([k, tools]) => `<div class="server-card"><div class="name">${icon("layers")}${esc(NAMES[k] || k)}<span class="spacer"></span><span class="faint small">${tools.length}</span></div><div class="chip-row">${tools.map((t) => `<span class="pill mono">${esc(t)}</span>`).join("")}</div></div>`).join("")}</div></div>`;
@@ -678,8 +928,8 @@ async function renderConditions() {
       <div class="card kpi"><div class="label">Average index<span class="ic green">${icon("activity")}</span></div><div class="value">${avg.toFixed(0)}</div><div class="hint">Of segments with open defects</div></div>
     </div>
     <div class="callout blue section-tight">${icon("alert")}<div><b>An estimate, not a certified survey.</b> ${esc(c.method)}. Use it to rank where to look; HRM's Pavement Quality Index survey remains the record.</div></div>
-    <div class="card section"><div class="card-head"><h2>Worst segments first</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>Road</th><th>Defects</th><th>Potholes</th><th>P1</th><th style="width:28%">Condition index</th><th>Rating</th><th>Reports</th></tr></thead><tbody>
-      ${segs.map((x) => `<tr><td><b>${esc(x.road)}</b><div class="muted small mono">${x.lat.toFixed(5)}, ${x.lon.toFixed(5)}</div></td><td>${x.defects}</td><td>${x.potholes}</td><td>${x.priority1 ? `<span class="pill red">${x.priority1}</span>` : "0"}</td>
+    <div class="card section"><div class="card-head"><h2>Worst segments first</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>Road</th><th>Defects</th><th>Potholes</th><th style="width:28%">Condition index</th><th>Rating</th><th>Reports</th></tr></thead><tbody>
+      ${segs.map((x) => `<tr><td><b>${esc(x.road)}</b><div class="muted small mono">${x.lat.toFixed(5)}, ${x.lon.toFixed(5)}</div></td><td>${x.defects}</td><td>${x.potholes}</td>
         <td><div class="meter-row"><div class="meter"><span style="width:${x.condition_index}%" class="${tone[x.rating] || ""}"></span></div><span class="mono small">${x.condition_index.toFixed(0)}</span></div></td><td><span class="pill ${tone[x.rating] || ""}">${esc(x.rating)}</span></td>
         <td>${x.report_ids.slice(0, 6).map((id) => `<a href="#/reports?id=${id}" class="mono small">#${id}</a>`).join(" ")}</td></tr>`).join("")}</tbody></table></div></div>`;
 }
@@ -904,9 +1154,10 @@ document.addEventListener("keydown", (e) => {
 if (/Mac|iPhone|iPad/.test(navigator.platform)) $("#mod-key").textContent = "⌘";
 
 function toggleTheme() {
-  const dark = document.documentElement.dataset.theme === "dark" || (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+  const dark = document.documentElement.dataset.theme !== "light"; // Night Shift is the default; Daylight is opt-in
   document.documentElement.dataset.theme = dark ? "light" : "dark";
   try { localStorage.setItem("rs-theme", document.documentElement.dataset.theme); } catch (e) {}
+  if (maps.length && session.user) router(); // map markers take their outline from the theme
 }
 
 /* ---------- boot ---------- */

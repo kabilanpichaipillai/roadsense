@@ -5,8 +5,7 @@
     "provincial_route_range": [100, 199],
     "provincial_road_classes": ["motorway", "motorway_link"],
     "ambiguous_road_classes": ["trunk"],
-    "p1_width_m": 0.25,
-    "p1_depth_note": "HRM Priority 1: at least 25 cm wide and 8 cm deep (depth is estimated, never measured)",
+    "high_width_m": 0.25,
     "severity_bands": {
       "D40": [[0.10, "S1"], [0.25, "S2"], [0.50, "S3"], [99, "S4"]],
       "area": [[0.01, "S1"], [0.03, "S2"], [0.06, "S3"], [1, "S4"]]

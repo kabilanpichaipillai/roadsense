@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RoadSense</title>
+  <meta name="theme-color" content="#0B0D10">
   <meta name="description" content="AI agents that find road damage from a dashcam and get it to the road authority that can fix it.">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%234f46e5'/%3E%3Cpath d='M11 25l3-18M21 25l-3-18M16 10v2M16 15v2M16 20v2' stroke='white' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23FFB547'/%3E%3Cpath d='M11 25l3-18M21 25l-3-18M16 10v2M16 15v2M16 20v2' stroke='%230B0D10' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="/static/app.css?v=9">
+  <link rel="stylesheet" href="/static/app.css?v=18">
   <script>try { const t = localStorage.getItem("rs-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
 </head>
 <body>
@@ -18,7 +19,7 @@
 <div class="app">
   <aside class="sidebar" id="sidebar" aria-label="Primary">
     <div class="workspace">
-      <div class="brand-mark"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 21l3-18M16 21l-3-18M12 6v2M12 11v2M12 16v2"/></svg></div>
+      <div class="brand-mark"><svg viewBox="0 0 32 32" width="20" height="20" aria-hidden="true"><path d="M11 26 L15 6 M21 26 L17 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><circle cx="16" cy="17" r="2.8" fill="currentColor"/></svg></div>
       <div class="workspace-text"><div class="brand-name">RoadSense</div><div class="brand-sub">Halifax pilot</div></div>
       <span class="plan-badge">Pilot</span>
     </div>
@@ -235,6 +236,6 @@
 <div class="login" id="login" hidden></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="/static/vendor/leaflet/leaflet.js"></script>
-<script src="/static/app.js?v=12"></script>
+<script src="/static/app.js?v=21"></script>
 </body>
 </html>

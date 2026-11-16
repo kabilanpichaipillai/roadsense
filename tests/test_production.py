@@ -163,10 +163,10 @@ def test_cityworks_and_arcgis_adapters(monkeypatch, tmp_path):
     try:
         payload = {"authority": HRM, "channel": "cityworks", "service_code": "POTHOLE", "lat": 44.6, "long": -63.5,
                    "address_string": "Spring Garden Rd", "description": "Pothole", "media_url": "https://x/m.jpg",
-                   "attributes": {"severity": "high", "confirmations": 2, "p1_candidate": True}}
+                   "attributes": {"severity": "high", "confirmations": 2}}
         info = open311.service_info(HRM)
         assert delivery._cityworks_submit(payload, info, None)["service_request_id"] == "4242"
-        assert json.loads(seen[1][1]["data"])["Priority"] == "1" and seen[1][1]["token"] == "tok"
+        assert "Priority" not in json.loads(seen[1][1]["data"]) and seen[1][1]["token"] == "tok"
         assert delivery._arcgis_submit(payload, info, None)["service_request_id"] == "9"
     finally:
         object.__setattr__(settings, "cityworks_url", "")

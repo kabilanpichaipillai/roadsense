@@ -18,8 +18,8 @@ CLASS_WEIGHT = {"D40": 1.5, "D20": 1.2, "D00": 1.0, "D10": 1.0}  # potholes dama
 CLASS_NAMES = {"D00": "Longitudinal crack", "D10": "Transverse crack", "D20": "Alligator crack", "D40": "Pothole"}
 OPEN_STATUSES = ("pending_approval", "approved", "submitted", "delivery_failed")
 VERDICTS = ("confirmed", "disputed", "rejected")
-HRM_P1_WIDTH_M = 0.25  # HRM Priority 1: at least 25 cm wide and 8 cm deep (depth is not measurable from video)
-JOLT_P1_G = 0.6        # a vertical jolt this strong from the phone/dashcam IMU corroborates a deep pothole
+HIGH_WIDTH_M = 0.25  # a pothole at least this wide is high severity (depth is not measurable from video)
+JOLT_HIGH_G = 0.6    # a vertical jolt this strong from the phone/dashcam IMU corroborates a deep pothole
 
 
 def _rules() -> dict:
@@ -74,7 +74,7 @@ def severity_band(class_code: str, width_m: float | None, box_area_ratio: float,
     else:
         table, value = bands.get("area", [[0.01, "S1"], [0.03, "S2"], [0.06, "S3"], [1, "S4"]]), box_area_ratio
     band = next((b for limit, b in table if value < limit), table[-1][1])
-    if class_code == "D40" and jolt_g is not None and jolt_g >= JOLT_P1_G and band != "S4":
+    if class_code == "D40" and jolt_g is not None and jolt_g >= JOLT_HIGH_G and band != "S4":
         band = f"S{int(band[1]) + 1}"
     if class_code in ("D00", "D10") and band in ("S3", "S4"):
         band = "S2"  # a line crack is a maintenance item, never urgent on its own
@@ -91,13 +91,11 @@ def repair_target_days(band: str, road_class: str | None) -> int | None:
 
 def estimate_severity(class_code: str, box_area_ratio: float, confidence: float, frames_seen: int,
                       width_m: float | None = None, jolt_g: float | None = None) -> dict:
-    """Severity from what the camera saw. Potholes use estimated width against HRM's Priority 1 threshold when the
+    """Severity from what the camera saw. Potholes use estimated width against the high-severity width when the
     camera geometry gave one; otherwise the box area at the best frame is the size proxy."""
-    p1_width = _rules().get("p1_width_m", HRM_P1_WIDTH_M)
-    p1 = False
+    high_width = _rules().get("high_width_m", HIGH_WIDTH_M)
     if class_code == "D40" and width_m is not None:
-        p1 = width_m >= p1_width
-        level = "high" if p1 else ("medium" if width_m >= 0.10 else "low")
+        level = "high" if width_m >= high_width else ("medium" if width_m >= 0.10 else "low")
         size = f"about {width_m * 100:.0f} cm wide"
     elif class_code == "D40":
         level = "high" if box_area_ratio >= 0.02 else "medium"
@@ -108,15 +106,14 @@ def estimate_severity(class_code: str, box_area_ratio: float, confidence: float,
     else:
         level = "medium" if box_area_ratio >= 0.06 else "low"
         size = f"covering {box_area_ratio:.1%} of the frame"
-    if class_code == "D40" and jolt_g is not None and jolt_g >= JOLT_P1_G and level != "high":
+    if class_code == "D40" and jolt_g is not None and jolt_g >= JOLT_HIGH_G and level != "high":
         level = "high"
         size += f", {jolt_g:.1f} g jolt"
     if confidence < 0.35 and level == "high":
         level = "medium"
     band = severity_band(class_code, width_m, box_area_ratio, jolt_g)
-    reason = (f"{class_code} {size}, confidence {confidence:.2f}, seen in {frames_seen} frames"
-              + ("; meets HRM Priority 1 width (depth unverified)" if p1 else ""))
-    return {"severity": level, "p1_candidate": p1, "width_m": width_m, "band": band, "reason": reason}
+    reason = f"{class_code} {size}, confidence {confidence:.2f}, seen in {frames_seen} frames"
+    return {"severity": level, "width_m": width_m, "band": band, "reason": reason}
 
 
 def priority(severity: str, class_code: str, confirmations: int) -> float:
@@ -185,7 +182,7 @@ def link_external(conn: sqlite3.Connection, report: dict, radius_m: float) -> di
 
 def create_or_merge(conn: sqlite3.Connection, event_id: str, severity: str, address: str | None,
                     municipality: str | None, radius_m: float, actor: str = "triage", jurisdiction: str | None = None,
-                    rationale: str | None = None, p1_candidate: bool = False, band: str | None = None,
+                    rationale: str | None = None, band: str | None = None,
                     road_class: str | None = None, road_name: str | None = None,
                     suppress_days: int | None = None) -> dict:
     from ..common.config import settings
@@ -227,11 +224,11 @@ def create_or_merge(conn: sqlite3.Connection, event_id: str, severity: str, addr
         needs_update = r["status"] in ("approved", "submitted", "delivery_failed") and (
             confirmations != r["confirmations"] or sev != r["severity"])
         conn.execute("UPDATE reports SET confirmations = ?, severity = ?, priority = ?, updated_at = ?, "
-                     "p1_candidate = MAX(p1_candidate, ?), class_disputed = MAX(class_disputed, ?), "
+                     "class_disputed = MAX(class_disputed, ?), "
                      "severity_band = COALESCE(?, severity_band), "
                      "repair_target_days = COALESCE(?, repair_target_days), "
                      "pending_update = MAX(pending_update, ?) WHERE id = ?",
-                     (confirmations, sev, priority(sev, r["class_code"], confirmations), ts, int(p1_candidate),
+                     (confirmations, sev, priority(sev, r["class_code"], confirmations), ts,
                       event["class_disputed"], new_band,
                       repair_target_days(new_band, r.get("road_class")) if new_band else None, int(needs_update),
                       r["id"]))
@@ -239,12 +236,12 @@ def create_or_merge(conn: sqlite3.Connection, event_id: str, severity: str, addr
     else:
         cur = conn.execute(
             "INSERT INTO reports (trip_id, class_code, class_name, lat, lon, address, municipality, jurisdiction,"
-            " severity, priority, best_event_id, width_m, p1_candidate, class_disputed, rationale, severity_band,"
+            " severity, priority, best_event_id, width_m, class_disputed, rationale, severity_band,"
             " repair_target_days, road_class, road_name, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (event["trip_id"], event["class_code"], event["class_name"], event["lat"], event["lon"], address,
              municipality, jurisdiction or municipality, severity, priority(severity, event["class_code"], 1),
-             event_id, event["width_m"], int(p1_candidate), event["class_disputed"], (rationale or "")[:500], band,
+             event_id, event["width_m"], event["class_disputed"], (rationale or "")[:500], band,
              repair_target_days(band, road_class) if band else None, road_class, road_name, ts, ts))
         report_id, action = cur.lastrowid, "created"
     conn.execute("UPDATE events SET report_id = ?, status = 'processed', road_class = COALESCE(?, road_class), "

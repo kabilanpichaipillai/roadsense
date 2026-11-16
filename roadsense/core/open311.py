@@ -4,7 +4,7 @@ The payload is built deterministically from the database, so the reviewer approv
 approval stores the payload and its hash, and delivery sends that stored snapshot (see core.delivery).
 
 The directory is configuration, not code: authorities, aliases, channels, service codes and the regional rules
-(provincial routes, Priority 1 width, severity bands, repair targets) live in a JSON file. The built-in file covers
+(provincial routes, high-severity width, severity bands, repair targets) live in a JSON file. The built-in file covers
 the Halifax pilot; ROADSENSE_AUTHORITIES_FILE points at another region's file.
 """
 from __future__ import annotations
@@ -69,7 +69,7 @@ def build_payload(report: dict) -> dict:
     code = info.get("service_code", "POTHOLE") if report["class_code"] == "D40" else \
         info.get("crack_service_code", info.get("service_code", "ROAD_SURFACE"))
     attributes = {"severity": report["severity"], "confirmations": report["confirmations"],
-                  "p1_candidate": bool(report.get("p1_candidate")), "source": "RoadSense"}
+                  "source": "RoadSense"}
     if report.get("severity_band"):
         attributes["severity_band"] = report["severity_band"]
     if report.get("repair_target_days"):

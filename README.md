@@ -49,7 +49,7 @@ flowchart LR
 | **Real damage, false alarm, or disputed?** | RT-DETR-L verification on the redacted frame, close-up re-check for confident unconfirmed detections | Can't confirm without verifier evidence; "disputed" only when the two models disagree on class. YOLOv8m's label is kept and the driver is asked. |
 | **Who maintains this road?** | OpenStreetMap road class and route number: 100-series highways → Nova Scotia Public Works; numbered routes through the city are ambiguous and the agent weighs them; local streets → HRM | Only authorities in the directory have a delivery channel |
 | **New report or another sighting of a known one?** | Open reports of the same class within 15 m of the projected position | Merging is idempotent; confirmations raise priority |
-| **What the authority is told** | Report facts: class, width band, HRM Priority 1 candidate, confirmations, address | Text is sanitised, and locked by hash once the driver approves |
+| **What the authority is told** | Report facts: class, width band, severity, confirmations, address | Text is sanitised, and locked by hash once the driver approves |
 | **Is it fixed?** | Authority status feed | Notifies each driver once |
 
 The fallback that completes any skipped step is a circuit breaker, not the engine: its use is counted and reported
@@ -169,9 +169,9 @@ research synthesis in [docs/research-synthesis.md](docs/research-synthesis.md):
 
 | Page | What it is for |
 |---|---|
-| **Overview** | Outcome funnel (detections → confirmed → unique reports → sent), duplicates merged, false alarms removed, routed to the province, Priority 1 candidates, repairs confirmed, agent cost, latest decisions, mini map |
+| **Overview** | The review queue and reports by status, the pipeline as a road (detections → confirmed → unique reports → sent, with duplicates merged and false alarms dropped between stops), signals worth a look, a map, grouped agent decisions and recent trips |
 | **Trips** | Upload a dashcam video (+ GPX/CSV, or a simulated Halifax route); live progress through edge → upload → agents; detections gallery; "Process now" for uploaded-but-unprocessed trips |
-| **Review** | The approval inbox: photo, flags (P1 candidate, class disputed, N drivers), the agents' decision timeline, and the exact payload locked by SHA-256. Sending always needs a click |
+| **Review** | The approval inbox: photo, flags (class disputed, N drivers), the agents' decision timeline, and the exact payload locked by SHA-256. Sending always needs a click |
 | **Reports** | All reports with status filters and a detail page |
 | **Map** | Leaflet map (vendored) coloured by status, sized by independent drivers |
 | **Road condition** | Segment-level condition estimate (0-100, PCI-style deducts per 100 m) from open defects, worst first |

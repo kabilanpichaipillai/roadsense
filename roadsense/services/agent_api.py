@@ -233,7 +233,6 @@ def stats():
             "duplicates_merged": max(linked - n_reports, 0),
             "suppressed_after_rejection": one("SELECT COUNT(*) FROM events WHERE suppressed_by IS NOT NULL"),
             "multi_driver_reports": one("SELECT COUNT(*) FROM reports WHERE confirmations > 1"),
-            "priority1_candidates": one("SELECT COUNT(*) FROM reports WHERE p1_candidate = 1"),
             "class_disputed": one("SELECT COUNT(*) FROM reports WHERE class_disputed = 1"),
             "known_to_city": one("SELECT COUNT(*) FROM reports WHERE external_ref IS NOT NULL"),
             "delivery_failed": one("SELECT COUNT(*) FROM reports WHERE status = 'delivery_failed' OR "

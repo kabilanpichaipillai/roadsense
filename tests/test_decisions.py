@@ -52,7 +52,7 @@ def test_disputed_keeps_edge_label_and_flags_report(db):
 def test_jurisdiction_routing(db):
     with session() as conn:
         highway = geo.jurisdiction_candidates(geo.reverse_geocode(conn, 44.6800, -63.6797))  # on Highway 102
-        numbered = geo.jurisdiction_candidates(geo.reverse_geocode(conn, 44.6800, -63.6451))  # Bedford Highway
+        numbered = geo.jurisdiction_candidates(geo.reverse_geocode(conn, *geo.point_on_road(1, 0.5)))  # Bedford Highway
         street = geo.jurisdiction_candidates(geo.reverse_geocode(conn, 44.6430, -63.5800))
     assert highway[0]["authority"] == geo.PROVINCIAL and highway[0]["confidence"] == "high"
     assert {c["confidence"] for c in numbered} == {"medium"} and len(numbered) == 2  # ambiguous: agent decides
@@ -70,8 +70,9 @@ def test_camera_projects_detection_ahead_of_the_car():
     assert haversine_m(44.64, -63.58, lat, lon) == pytest.approx(near["forward_m"], rel=0.01) and lon > -63.58
 
 
-def test_width_drives_hrm_priority_1():
-    assert reports.estimate_severity("D40", 0.01, 0.8, 5, width_m=0.30)["p1_candidate"] is True
+def test_pothole_width_drives_severity():
+    high = reports.estimate_severity("D40", 0.01, 0.8, 5, width_m=0.30)
+    assert high["severity"] == "high" and "p1_candidate" not in high
     assert reports.estimate_severity("D40", 0.01, 0.8, 5, width_m=0.15)["severity"] == "medium"
 
 
@@ -124,3 +125,10 @@ def test_agent_output_contract():
     assert ok is not None and err is None
     bad, err = validate(VisionResult, '{"events": [{"event_id": "e1", "verdict": "probably", "rationale": "x"}]}')
     assert bad is None and "verdict" in err
+
+
+def test_bedford_highway_follows_the_shore_not_the_basin():
+    # the old straight-line fixture put this point, in Bedford Basin, on the highway
+    assert geo._offline(44.68034, -63.645425)["road"] is None
+    for t in (0.0, 0.25, 0.5, 0.75, 1.0):
+        assert geo._offline(*geo.point_on_road(1, t))["road"] == "Bedford Highway"

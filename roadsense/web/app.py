@@ -76,7 +76,7 @@ async def security(request: Request, call_next):
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault(
         "Content-Security-Policy",
-        "default-src 'self'; img-src 'self' data: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; "
+        "default-src 'self'; img-src 'self' data: https://server.arcgisonline.com; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; "
         "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
     if settings.cookie_secure:
@@ -91,15 +91,29 @@ def need(request: Request, perm: str) -> dict:
     return user
 
 
+_http_lock = threading.Lock()
+_http: httpx.Client | None = None
+
+
+def http() -> httpx.Client:
+    """One pooled client for the whole process. Building an httpx.Client loads the TLS trust store (about 1.5 s on
+    Windows), so a client per call made every page wait several seconds for four local requests."""
+    global _http
+    with _http_lock:
+        if _http is None or _http.is_closed:
+            _http = httpx.Client(timeout=60, limits=httpx.Limits(max_connections=32, max_keepalive_connections=16))
+        return _http
+
+
 def agent(method: str, path: str, user: dict | None = None, **kw):
     headers = {"Authorization": f"Bearer {settings.api_token}"}
     if user:
         headers.update({"X-RoadSense-User": user["email"], "X-RoadSense-Role": user["role"]})
-    with httpx.Client(base_url=settings.agent_api_url, timeout=kw.pop("timeout", 60), headers=headers) as c:
-        try:
-            r = c.request(method, path, **kw)
-        except httpx.HTTPError as e:
-            raise HTTPException(502, f"agent service unavailable: {e}") from e
+    try:
+        r = http().request(method, settings.agent_api_url.rstrip("/") + path, headers=headers,
+                           timeout=kw.pop("timeout", 60), **kw)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"agent service unavailable: {e}") from e
     if r.status_code >= 400:
         raise HTTPException(r.status_code, r.json().get("detail", r.text) if r.headers.get(
             "content-type", "").startswith("application/json") else r.text)
@@ -160,7 +174,7 @@ def external(source: str | None = None):
 @app.get("/api/authorities")
 def authorities():
     try:
-        city = httpx.get(f"{settings.open311_url}/requests.json", timeout=10).json()
+        city = http().get(f"{settings.open311_url}/requests.json", timeout=10).json()
     except (httpx.HTTPError, ValueError):
         city = []
     referrals = []
