@@ -191,7 +191,7 @@ function animateView(root) {
     wrap.append(img);
   });
   if (STILL.matches) return;
-  $$(".kpi .value, .funnel .n", root).forEach((el) => {
+  $$(".kpi .value, .funnel .n, .ov-num, .ov-stop .n", root).forEach((el) => {
     const node = [...el.childNodes].find((n) => n.nodeType === 3 && /\d/.test(n.textContent));
     if (!node) return;
     const text = node.textContent.trim();
@@ -238,44 +238,111 @@ async function refreshChrome() {
 async function renderOverview() {
   const view = stage();
   const { stats: s, reports, trips, activity } = await api("/api/overview");
-  const reportsN = Object.values(s.reports).reduce((a, b) => a + b, 0);
-  const sent = (s.reports.submitted || 0) + (s.reports.fixed || 0);
-  const confirmed = (s.events.processed || 0) + (s.events.verified || 0);
-  const funnelStage = (n, t, of, prev, d = true) => `<div class="stage"><div class="t">${t}</div><div class="n">${num(n)}${prev != null ? `<span class="rate">${prev ? pct(n / prev) : "–"} of previous</span>` : ""}</div><div class="bar"><i style="width:${of ? Math.max(3, (n / of) * 100) : 0}%"></i></div>${d ? `<span class="delta">${icon("arrow")}</span>` : ""}</div>`;
-  const kpi = (ic, label, value, hint, tone = "") => `<div class="card kpi"><div class="label">${label}<span class="ic ${tone}">${icon(ic)}</span></div><div class="value">${value}</div><div class="hint">${hint}</div></div>`;
+  const by = s.reports || {};
+  const total = Object.values(by).reduce((a, b) => a + b, 0);
+  const pending = by.pending_approval || 0;
+  const confirmed = (s.events?.processed || 0) + (s.events?.verified || 0);
+  const sent = (by.submitted || 0) + (by.fixed || 0);
+  const province = s.authorities?.["Nova Scotia Public Works"] || 0;
+
+  // 1. The queue: the one thing a reviewer does here, and where every report stands
+  const order = ["pending_approval", "approved", "submitted", "delivery_failed", "fixed", "rejected"].filter((k) => by[k]);
+  // The bar is a picture of the legend below it; the legend carries the links and the numbers for every reader
+  const stack = order.map((k) => `<span class="ov-seg" data-s="${k}" style="flex:${by[k]}"></span>`).join("");
+  const legend = order.map((k) => `<li><a href="#/reports?status=${k}" data-s="${k}"><span class="sw"></span>${esc(STATUS[k][0])}<b>${num(by[k])}</b></a></li>`).join("");
+  const queue = pending
+    ? `<div class="ov-num" aria-hidden="true">${num(pending)}</div>
+       <h2 class="ov-lead"><span class="sr-only">${num(pending)} </span>${pending === 1 ? "report waits" : "reports wait"} for your approval</h2>
+       <p class="ov-sub">Nothing reaches Halifax 311 or the province until you approve its exact payload.</p>
+       <div class="ov-actions"><a class="btn btn-primary btn-lg" href="#/review">${icon("inbox")}Start reviewing</a><a class="btn btn-lg" href="#/map">${icon("map")}See them on the map</a></div>`
+    : `<div class="ov-num is-clear" aria-hidden="true">0</div>
+       <h2 class="ov-lead">The review queue is clear</h2>
+       <p class="ov-sub">Upload a dashcam drive and the agents will bring you the next batch.</p>
+       <div class="ov-actions"><a class="btn btn-primary btn-lg" href="#/trips?new=1">${icon("upload")}Upload a trip</a></div>`;
+
+  // 2. The pipeline as a road: four stops, and what fell away between them painted on the asphalt
+  const stop = (n, t, note, tone = "") => `<li class="ov-stop ${tone}"><span class="ov-pin"></span><div class="t">${t}</div><div class="n">${num(n)}</div>${note ? `<div class="note">${note}</div>` : ""}</li>`;
+  const drop = (n, t) => `<li class="ov-drop ${n ? "" : "is-zero"}" aria-label="${n} ${t}"><span>${n ? "−" + num(n) : "0"}</span>${t}</li>`;
+
+  // 3. Signals: counts that deserve a look, quiet when they are zero
+  const sig = (ic, tone, n, label, hint, href) => `<li><a class="ov-sig ${n ? "" : "is-zero"}" href="${href}"><span class="ic ${tone}">${icon(ic)}</span><span class="txt"><b>${label}</b><span>${hint}</span></span><span class="n">${num(n)}</span></a></li>`;
+  const signals = [
+    sig("alert", "red", s.priority1_candidates, "Priority 1 candidates", "Width ≥ 25 cm, HRM's 7-day standard", "#/reports"),
+    sig("eye", "amber", s.class_disputed, "Damage type disputed", "The two vision models disagree", "#/review"),
+    sig("route", "cyan", province, "Routed to the province", "100-series highways, not city 311", "#/authorities"),
+    sig("merge", "blue", s.multi_driver_reports, "Seen by 2+ drivers", "Independent confirmations", "#/reports"),
+    sig("wrench", "green", by.fixed || 0, "Repairs confirmed", "Drivers notified", "#/reports?status=fixed"),
+    s.delivery_failed ? sig("alert", "red", s.delivery_failed, "Deliveries failing", "Retrying with back-off", "#/authorities") : "",
+  ].join("");
+
   view.innerHTML = `
-    <div class="card"><div class="card-head"><h2>Pipeline</h2><span class="desc">From detection to the right desk</span><span class="spacer"></span><span class="pill">${icon("video")}${num(s.trips)} trips</span><span class="pill violet">${icon("sparkle")}${s.agent_trips} by LLM agents</span></div>
-      <div class="funnel">${funnelStage(s.detections, "Detections", s.detections)}${funnelStage(confirmed, "Confirmed by Vision agent", s.detections, s.detections)}${funnelStage(reportsN, "Unique reports", s.detections, confirmed)}${funnelStage(sent, "Sent to an authority", s.detections, reportsN, false)}</div></div>
-    <div class="grid kpis section">
-      ${kpi("inbox", "Awaiting your review", num(s.reports.pending_approval), "Nothing leaves without approval", "amber")}
-      ${kpi("merge", "Duplicates merged", num(s.duplicates_merged), `${num(s.multi_driver_reports)} reports confirmed by 2+ drivers`, "blue")}
-      ${kpi("x", "False alarms removed", num(s.false_alarms_removed), "Rejected by verification", "")}
-      ${kpi("route", "Routed to the province", num(s.authorities["Nova Scotia Public Works"]), "Not dumped on city 311", "cyan")}
-      ${kpi("alert", "Priority 1 candidates", num(s.priority1_candidates), "Width ≥ 25 cm (HRM standard)", "red")}
-      ${kpi("wrench", "Repairs confirmed", num(s.reports.fixed), "Drivers notified", "green")}
-    </div>
-    <div class="grid two section">
-      <div class="card"><div class="card-head"><h2>Latest agent decisions</h2><span class="spacer"></span>${more("#/activity", "View all")}</div>
-        ${activity.length ? `<ul class="feed">${activity.map(feedItem).join("")}</ul>` : emptyState("sparkle", "No decisions yet", "Upload a trip to see the agents work.")}</div>
-      <div class="grid" style="align-content:start">
-        <div class="card"><div class="card-head"><h2>Reports map</h2><span class="spacer"></span>${more("#/map", "Open map")}</div><div id="mini-map" class="map-mini"></div></div>
-        <div class="card"><div class="card-head"><h2>Agent usage</h2><span class="spacer"></span><span class="desc">All trips</span></div><div class="card-body facts">
-          <div class="fact"><div class="k">LLM calls</div><div class="v">${num(s.llm_calls)}</div></div>
-          <div class="fact"><div class="k">Tokens</div><div class="v">${num(s.llm_tokens)}</div></div>
-          <div class="fact"><div class="k">Fallback rate</div><div class="v">${pct(s.fallback_rate)}</div></div>
-          <div class="fact"><div class="k">Disputed classes</div><div class="v">${num(s.class_disputed)}</div></div></div></div>
+    <section class="card ov-hero">
+      <div class="ov-queue">${queue}</div>
+      <div class="ov-status">
+        <div class="ov-k">${num(total)} reports by status</div>
+        <div class="ov-stack" aria-hidden="true">${stack || '<span class="ov-seg empty"></span>'}</div>
+        <ul class="ov-legend">${legend}</ul>
       </div>
+    </section>
+    <section class="card ov-road section" aria-labelledby="ov-road-h">
+      <div class="card-head"><h2 id="ov-road-h">From dashcam to the right desk</h2><span class="spacer"></span>
+        <span class="desc">${num(s.trips)} trips · ${num(s.llm_calls)} LLM calls · ${num(s.llm_tokens)} tokens · ${pct(s.fallback_rate)} decided by the rule engine</span></div>
+      <ol class="ov-lane">
+        ${stop(s.detections, "Spotted on the dashcam", "Edge model, faces and plates blurred")}
+        ${drop(s.false_alarms_removed, "false alarms dropped")}
+        ${stop(confirmed, "Confirmed by the Vision agent", "Second model checks every crop")}
+        ${drop(s.duplicates_merged, "merged as duplicates")}
+        ${stop(total, "Unique reports", pending ? `${num(pending)} waiting for you` : "None waiting", pending ? "is-hot" : "")}
+        ${drop(total - sent, "not sent yet")}
+        ${stop(sent, "Sent to an authority", province ? `${num(province)} to the province` : "Via Open311")}
+      </ol>
+    </section>
+    <div class="ov-row section">
+      <section class="card ov-map"><div class="card-head"><h2>Where the damage is</h2><span class="spacer"></span>${more("#/map", "Open full map")}</div><div id="mini-map" class="map-mini"></div></section>
+      <section class="card"><div class="card-head"><h2>Worth a look</h2></div><ul class="ov-sigs">${signals}</ul></section>
     </div>
-    <div class="card section"><div class="card-head"><h2>Recent trips</h2><span class="spacer"></span>${more("#/trips", "All trips")}</div>
-      ${tripsTable(trips)}</div>`;
+    <div class="ov-row section">
+      <section class="card"><div class="card-head"><h2>Latest decisions</h2><span class="spacer"></span>${more("#/activity", "Full audit log")}</div>
+        ${activity.length ? `<ol class="ov-timeline">${groupActivity(activity).slice(0, 6).map(timelineItem).join("")}</ol>` : emptyState("sparkle", "No decisions yet", "Upload a trip to see the agents work.")}</section>
+      <section class="card"><div class="card-head"><h2>Recent trips</h2><span class="spacer"></span>${more("#/trips", "All trips")}</div>
+        ${trips.length ? `<ul class="ov-trips">${trips.map(tripItem).join("")}</ul>` : emptyState("video", "No trips yet", "Upload a dashcam video with its GPS track.", `<a class="btn btn-primary" style="margin-top:12px" href="#/trips?new=1">${icon("upload")}New trip</a>`)}</section>
+    </div>`;
   drawMap("mini-map", reports, { zoom: 14, interactive: false });
 }
 
-function feedItem(a) {
-  const [who] = actor(a.actor);
-  const [what, why] = describe(a);
-  const link = a.subject?.startsWith("report:") ? `#/reports?id=${a.subject.slice(7)}` : "";
-  return `<li>${avatar(a.actor)}<div style="min-width:0;flex:1"><div><span class="what">${esc(what)}</span> <span class="who">· ${esc(who)}</span></div>${why ? `<div class="why">${esc(why).slice(0, 360)}</div>` : ""}${link ? `<a class="link-more" style="margin-top:4px" href="${link}">Open report${icon("arrow")}</a>` : ""}</div><span class="when">${ago(a.ts)}</span></li>`;
+// Consecutive decisions of the same kind by the same actor read as one line: "Rejected by a reviewer · 4 reports"
+function groupActivity(list) {
+  const out = [];
+  for (const a of list) {
+    const last = out[out.length - 1];
+    if (last && last.action === a.action && last.actor === a.actor && !a.action.startsWith("trip_")) last.items.push(a);
+    else out.push({ ...a, items: [a] });
+  }
+  return out;
+}
+
+function timelineItem(g) {
+  const [who] = actor(g.actor);
+  const [what, why] = describe(g);
+  const ids = g.items.map((a) => a.subject?.startsWith("report:") ? a.subject.slice(7) : null).filter(Boolean);
+  const many = g.items.length > 1;
+  // One report: the title is the link. A group: a chip per report it touched.
+  const title = !many && ids.length ? `<a class="what" href="#/reports?id=${ids[0]}">${esc(what)}${what.includes(`#${ids[0]}`) ? "" : ` · #${ids[0]}`}</a>` : `<span class="what">${esc(what)}</span>`;
+  const chips = many ? ids.map((id) => `<a class="ov-chip" href="#/reports?id=${id}">#${id}</a>`).join("") : "";
+  return `<li>${avatar(g.actor)}<div class="body"><div class="head">${title}${many ? `<span class="x">×${g.items.length}</span>` : ""}<span class="when">${ago(g.ts)}</span></div>
+    <div class="who">${esc(who)}</div>${!many && why ? `<div class="why">${esc(why)}</div>` : ""}${chips ? `<div class="chips">${chips}</div>` : ""}</div></li>`;
+}
+
+function tripItem(t) {
+  const run = t.run || {};
+  const agents = run.mode?.startsWith("agents");
+  const waiting = !run.mode && t.processed + t.rejected < t.events;
+  const state = agents ? `<span class="pill violet">${icon("sparkle")}Agents</span>` : run.mode ? `<span class="pill">${icon("cpu")}Rule engine</span>`
+    : waiting ? `<button class="btn btn-sm" data-process="${esc(t.trip_id)}">${icon("refresh")}Process now</button>` : `<span class="pill green">${icon("check")}Done</span>`;
+  const share = t.events ? Math.round((t.processed / t.events) * 100) : 0;
+  return `<li><span class="ic">${icon("video")}</span><div class="body"><div class="id mono">${esc(t.trip_id)}</div>
+    <div class="meta">${num(t.events)} detections · ${num(t.processed)} confirmed${t.rejected ? ` · ${num(t.rejected)} dropped` : ""} · ${ago(t.started)}</div>
+    <div class="ov-meter" aria-hidden="true"><i style="width:${share}%"></i></div></div>${state}</li>`;
 }
 
 document.addEventListener("click", async (ev) => {
@@ -546,9 +613,11 @@ async function renderReview(params) {
       <div class="card" id="detail"><div class="card-body"><div class="skeleton" style="width:50%"></div></div></div></div>`;
   const ids = pending.map((r) => r.id);
   const open = async (id) => {
+    if (view !== stage()) return; // the user has already moved to another page
     $$(".inbox-item").forEach((x) => x.classList.toggle("on", Number(x.dataset.id) === id));
     history.replaceState(null, "", `#/review?id=${id}`);
     const d = await api(`/api/reports/${id}`);
+    if (view !== stage()) return;
     $("#detail").innerHTML = reportDetail(d);
     bindDetail(d, (stay) => renderReview(new URLSearchParams(`id=${stay ? id : ids[ids.indexOf(id) + 1] || ""}`)));
     reviewKeys.current = id;
