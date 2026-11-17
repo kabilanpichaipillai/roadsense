@@ -1,0 +1,6 @@
+{$SITE_HOST} {
+	encode zstd gzip
+	# signed evidence photos the road authority opens come from the agent API
+	reverse_proxy /media/* roadsense:8000
+	reverse_proxy roadsense:7860
+}

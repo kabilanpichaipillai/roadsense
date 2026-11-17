@@ -1,62 +1,27 @@
-"""Deploy the RoadSense demo to a Hugging Face Docker Space (free CPU hardware).
+"""Deploy the RoadSense demo to a Hugging Face Docker Space.
+
+Note: Docker Spaces on Hugging Face's free CPU hardware need a PRO subscription. For a free option use
+scripts/deploy_gcp.py with Google Cloud's trial credit.
 
     pip install huggingface_hub
     hf auth login                      # once, with a token that has write access
     python scripts/deploy_hf.py        # private Space <you>/roadsense, rule engine only
     python scripts/deploy_hf.py --with-llm --public
 
-What it does: stages the code, the keyless demo trip and the two detector weights with deploy/huggingface/, creates
-the Space if needed, sets its secrets and variables, and uploads. Hugging Face then builds the image (about 10 minutes).
-
-Secrets (admin password, session, media and API keys) are generated once and kept in ~/.roadsense/ so a redeploy keeps
-the same admin password. Nothing secret is printed. The demo runs on sample data with a mock Halifax 311 inside the
-container; free Spaces are not in Canada, so do not put real municipal data on one.
+What it does: stages the code, the keyless demo trip and the two detector weights with deploy/container/ and the
+Space card, creates the Space if needed, sets its secrets and variables, and uploads. Hugging Face then builds the
+image (about 10 minutes). Secrets are generated once and kept in ~/.roadsense/; nothing secret is printed. The demo
+runs on sample data with a mock Halifax 311 inside the container; Spaces are not in Canada, so no real municipal data.
 """
 from __future__ import annotations
 
 import argparse
-import json
-import secrets
-import shutil
 import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-SPACE_FILES = ROOT / "deploy" / "huggingface"
-# Plain settings worth carrying from .env; anything else stays local
-CARRY = ("ROADSENSE_CAMERA_HEIGHT_M", "ROADSENSE_CAMERA_HFOV_DEG", "ROADSENSE_CAMERA_PITCH_DEG",
-         "ROADSENSE_DEDUPE_RADIUS_M", "ROADSENSE_EDGE_WEIGHTS", "ROADSENSE_VERIFY_WEIGHTS")
-LLM_CARRY = ("ROADSENSE_LLM_MODELS", "ROADSENSE_LLM_RPM")
-
-
-def read_env(path: Path) -> dict:
-    out = {}
-    if path.is_file():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                out[k.strip()] = v.strip().strip('"').strip("'")
-    return out
-
-
-def stage(dest: Path, weights_dir: Path, weights: list[str]) -> None:
-    skip = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache")
-    for d in ("roadsense", "scripts", "demo"):
-        shutil.copytree(ROOT / d, dest / d, ignore=skip)
-    for f in ("requirements.lock", "pyproject.toml"):
-        shutil.copy2(ROOT / f, dest / f)
-    for f in ("Dockerfile", "start.sh", "README.md"):
-        # LF endings whatever the checkout did: `sh` in the Linux container fails on CRLF
-        text = (SPACE_FILES / f).read_text(encoding="utf-8").replace("\r\n", "\n")
-        (dest / f).write_text(text, encoding="utf-8", newline="\n")
-    (dest / "weights").mkdir()
-    for w in weights:
-        src = weights_dir / w
-        if not src.is_file():
-            raise SystemExit(f"Missing weights file {src}. Pass --weights-dir or set ROADSENSE_WEIGHTS_DIR in .env.")
-        shutil.copy2(src, dest / "weights" / w)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from deploy_common import CARRY, LLM_CARRY, ROOT, copy_lf, deployment_secrets, describe, read_env, stage, weights_for  # noqa: E402
 
 
 def main() -> None:
@@ -69,16 +34,13 @@ def main() -> None:
     p.add_argument("--dry-run", action="store_true", help="stage the files and stop; nothing is uploaded")
     args = p.parse_args()
 
-    env = read_env(ROOT / ".env")
-    weights_dir = args.weights_dir or Path(env.get("ROADSENSE_WEIGHTS_DIR", ROOT / "weights"))
-    weights = [env.get("ROADSENSE_EDGE_WEIGHTS", "yolov8m_rdd2022.pt"),
-               env.get("ROADSENSE_VERIFY_WEIGHTS", "rtdetr_l_rdd2022.pt")]
-
+    env = read_env()
+    weights_dir, weights = weights_for(env, args.weights_dir)
     with tempfile.TemporaryDirectory(prefix="roadsense-space-") as tmp:
         dest = Path(tmp)
         stage(dest, weights_dir, weights)
-        size = sum(f.stat().st_size for f in dest.rglob("*") if f.is_file())
-        print(f"Staged {sum(1 for f in dest.rglob('*') if f.is_file())} files, {size / 1e6:.0f} MB")
+        copy_lf(ROOT / "deploy" / "huggingface" / "README.md", dest / "README.md")
+        print(f"Staged {describe(dest)}")
         if args.dry_run:
             print("Dry run: nothing uploaded.")
             return
@@ -96,17 +58,9 @@ def main() -> None:
         api.create_repo(repo_id, repo_type="space", space_sdk="docker", private=not args.public, exist_ok=True)
         host = f"https://{repo_id.replace('/', '-').replace('_', '-').replace('.', '-').lower()}.hf.space"
 
-        # secrets: generated once, reused on every redeploy
-        store = Path.home() / ".roadsense" / f"hf_space_{owner}_{args.space}.json"
-        store.parent.mkdir(parents=True, exist_ok=True)
-        keep = json.loads(store.read_text(encoding="utf-8")) if store.is_file() else {}
-        for k in ("ROADSENSE_ADMIN_PASSWORD", "ROADSENSE_SESSION_SECRET", "ROADSENSE_MEDIA_SECRET",
-                  "ROADSENSE_API_TOKEN"):
-            keep.setdefault(k, secrets.token_urlsafe(18 if k == "ROADSENSE_ADMIN_PASSWORD" else 48))
-        store.write_text(json.dumps(keep, indent=2), encoding="utf-8")
+        keep, store = deployment_secrets(f"hf_space_{owner}_{args.space}")
         for k, v in keep.items():
             api.add_space_secret(repo_id, k, v)
-
         variables = {"ROADSENSE_PUBLIC_URL": host, "ROADSENSE_ADMIN_EMAIL": "admin@roadsense.local",
                      **{k: env[k] for k in CARRY if env.get(k)}}
         if args.with_llm:

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Free Spaces have no persistent disk: every start begins empty, so seed the keyless demo trips first.
+# On an empty data volume, seed the keyless demo trips first; later starts keep whatever is there.
 set -e
 if [ ! -f /app/data/demo/roadsense.db ]; then
   echo "Seeding the demo trips (keyless replay, no LLM calls)..."

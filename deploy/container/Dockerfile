@@ -1,6 +1,7 @@
-# RoadSense on a Hugging Face Docker Space (free CPU hardware): the whole stack in one container.
-# Built by scripts/deploy_hf.py, which stages this file with the code, the demo trip and the two detector weights.
-# Spaces route public traffic to app_port 7860 (the web app); the agent API and mock 311 stay inside the container.
+# RoadSense demo image: the whole stack in one container, seeded with the keyless demo trips on first start.
+# Built by scripts/deploy_gcp.py (a VM behind Caddy) or scripts/deploy_hf.py (a Hugging Face Space), which stage
+# this file with the code, the demo trip and the two detector weights. The web app listens on 7860; the agent API
+# (8000) and the mock 311 (8311) are only reachable from inside the container network.
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 curl \
