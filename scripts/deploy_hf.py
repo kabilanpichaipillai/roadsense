@@ -48,7 +48,9 @@ def stage(dest: Path, weights_dir: Path, weights: list[str]) -> None:
     for f in ("requirements.lock", "pyproject.toml"):
         shutil.copy2(ROOT / f, dest / f)
     for f in ("Dockerfile", "start.sh", "README.md"):
-        shutil.copy2(SPACE_FILES / f, dest / f)
+        # LF endings whatever the checkout did: `sh` in the Linux container fails on CRLF
+        text = (SPACE_FILES / f).read_text(encoding="utf-8").replace("\r\n", "\n")
+        (dest / f).write_text(text, encoding="utf-8", newline="\n")
     (dest / "weights").mkdir()
     for w in weights:
         src = weights_dir / w
