@@ -989,7 +989,6 @@ function showLogin(message = "") {
       <label>Password<input class="input" name="password" type="password" autocomplete="current-password" required></label>
       <button class="btn btn-primary btn-lg" type="submit">${icon("lock")}Sign in</button>
       ${session.sso ? `<div class="or"><span>or</span></div><a class="btn btn-lg" href="/auth/oidc/login">${icon("building")}Sign in with your organization</a>` : ""}
-      <div class="faint small">First run: the admin password is in <code>data/initial_admin_password.txt</code> unless ROADSENSE_ADMIN_PASSWORD is set.</div>
       <button class="btn btn-ghost btn-sm login-back" type="button" id="login-back">← Back to home</button>
     </form>`;
   $("#login-back").onclick = () => { box.hidden = true; box.innerHTML = ""; showLanding(); };
