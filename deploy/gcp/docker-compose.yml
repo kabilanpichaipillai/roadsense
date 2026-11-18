@@ -1,0 +1,28 @@
+# RoadSense demo on one VM: the app container behind Caddy, which gets a free Let's Encrypt certificate for
+# SITE_HOST (an <ip>.sslip.io name by default). Written to /opt/roadsense by scripts/deploy_gcp.py with a .env beside it.
+# Public: the web app, and GET /media/* of the agent API (signed evidence links a road authority opens).
+services:
+  roadsense:
+    build: .
+    env_file: .env
+    expose: ["7860", "8000"]
+    volumes:
+      - roadsense-data:/app/data
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: "20m", max-file: "3"}}
+  caddy:
+    image: caddy:2.10
+    environment:
+      SITE_HOST: ${SITE_HOST}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [roadsense]
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+volumes:
+  roadsense-data:
+  caddy-data:
+  caddy-config:
