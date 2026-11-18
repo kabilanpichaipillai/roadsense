@@ -104,6 +104,21 @@ Every approve, reject and class correction is stored as a label. `python scripts
 dataset of the privacy-redacted frames (split by trip) for fine-tuning on Halifax conditions, and a CSV of the
 decisions for measuring real-world precision.
 
+## 9. Demo VM and continuous deployment (Google Cloud)
+
+The demo runs on one Google Cloud VM in Toronto behind Caddy (HTTPS on an `<ip>.sslip.io` name), built from
+`deploy/container` and `deploy/gcp`. Demo data only: the free OpenRouter models are outside Canada.
+
+1. `python scripts/deploy_gcp.py --with-llm` creates the VM, copies the code, weights and a generated `.env`, and starts
+   it. Re-run it to redeploy by hand; `--delete` removes everything it created.
+2. `python scripts/setup_gcp_cd.py --github-vars` (once) creates a deploy-only service account (Compute read access, sudo
+   login to that one VM through OS Login), turns on OS Login for the VM, and trusts GitHub tokens from this repository's
+   Dev branch through Workload Identity Federation. No key is stored anywhere. It writes the repository variables the
+   workflow reads; `--delete` undoes it.
+3. `.github/workflows/cd.yml`: when CI passes on a push to Dev, GitHub bundles the code (not the weights or secrets),
+   copies it to the VM and runs `deploy/gcp/update.sh`, which rebuilds and restarts the app while keeping `.env`,
+   `weights/` and the data volumes, then checks the site answers. Run it by hand from Actions > CD > Run workflow.
+
 ## Known limits
 
 - One process per service and SQLite: fine for a pilot of a few vehicles, not for a city-wide fleet. Moving to

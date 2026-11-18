@@ -1,0 +1,70 @@
+# Continuous deployment: every commit on Dev that passes CI goes to the RoadSense VM on Google Cloud.
+# Signs in with Workload Identity Federation (no stored keys); the trust accepts only this repository's Dev branch.
+# One-time setup: scripts/deploy_gcp.py (the VM) and scripts/setup_gcp_cd.py --github-vars (the deploy identity
+# and the repository variables used below). Redeploy by hand: Actions > CD > Run workflow, on Dev.
+name: CD
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [Dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cd-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: dev
+      url: ${{ vars.ROADSENSE_URL }}
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      VM: ${{ vars.GCP_VM }}
+      GCLOUD_FLAGS: --zone ${{ vars.GCP_ZONE }} --project ${{ vars.GCP_PROJECT }} --quiet
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Bundle the code
+        run: |
+          mkdir bundle
+          cp -r roadsense scripts demo requirements.lock pyproject.toml bundle/
+          cp deploy/container/Dockerfile deploy/container/start.sh deploy/gcp/docker-compose.yml deploy/gcp/Caddyfile bundle/
+          echo "$SHA" > bundle/REVISION
+          tar -czf roadsense.tgz -C bundle .
+          ls -lh roadsense.tgz
+
+      - name: Copy to the VM and rebuild
+        run: |
+          gcloud compute scp roadsense.tgz deploy/gcp/update.sh "$VM": $GCLOUD_FLAGS --ssh-key-expire-after=30m
+          gcloud compute ssh "$VM" $GCLOUD_FLAGS --ssh-key-expire-after=30m \
+            --command 'sh ~/update.sh ~/roadsense.tgz; status=$?; rm -f ~/update.sh; exit $status'
+
+      - name: Check the site answers
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null "${{ vars.ROADSENSE_URL }}/healthz"; then echo "Up at ${{ vars.ROADSENSE_URL }} ($SHA)"; exit 0; fi
+            sleep 10
+          done
+          echo "The site did not answer within 5 minutes" >&2
+          exit 1
