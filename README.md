@@ -30,19 +30,36 @@ flowchart LR
   O -- token, validated --> API
   subgraph AGENTS["Level 2 · Agents (FastAPI + OpenRouter + 4 MCP servers)"]
     WEB[RoadSense web app] -- server-side token --> API
-    API[Agent API] --> ORC[Orchestrator: plans, delegates]
-    ORC --> VIS[Vision agent] --> MD[[detector MCP: RT-DETR-L verify, close-up re-check, severity, verdict]]
-    ORC --> LOC[Location agent] --> MG[[geo MCP: road class + route number, jurisdiction candidates]]
-    ORC --> TRI[Triage agent] --> MR[[reports MCP: dedupe / merge, drafts, notifications]]
-    ORC --> FIL[Filing agent: drafts]
-    APP{{Driver approves exact payload}} --> FIL2[Filing agent: send] --> MC[[municipality MCP: Open311 / referral, status]]
-    FU[Follow-up agent] --> MC
+    API[Agent API] --> WF[Trip workflow: code runs every step]
+    WF --> VIS[Vision step] --> MD[[detector MCP: RT-DETR-L verify, close-up re-check, severity, verdict]]
+    VIS -. borderline detections .-> AI{{AI judge: typed answer, checked}}
+    WF --> LOC[Location step] --> MG[[geo MCP: road class + route number, jurisdiction candidates]]
+    LOC -. unsure jurisdiction .-> AI
+    WF --> TRI[Triage step: rules] --> MR[[reports MCP: dedupe / merge, drafts, notifications]]
+    WF --> DRA[Drafting step] -. description .-> AI
+    APP{{Driver approves exact payload}} --> FIL2[Filing: plain code] --> MC[[municipality MCP: Open311 / referral, status]]
+    FU[Follow-up: plain code] --> MC
   end
   MC --> HRM[Halifax 311 · mock Open311]
   MC --> NS[NS Public Works · referral package]
 ```
 
-### Decisions the agents make (and the trace shows why)
+### How the AI is used
+
+A code workflow runs every step of a trip; the model is asked only where judgement adds something, in batches of up
+to 8 items, and never calls tools itself. Each step uses its own allow-listed MCP tools (enforced in code), hands the
+model the evidence as data, and checks its typed answer: an answer about an id it was not asked about, or a choice
+outside the candidates, is dropped and the rule decides. If the model becomes unavailable, the rules finish the trip.
+
+| Step | Rule | Where the AI judges |
+|---|---|---|
+| Vision | verifier support confirms; a class disagreement is "disputed"; no support is a false alarm | confirmations on weak evidence (verifier confidence < 0.65, ≤ 2 frames, box overlap < 0.3, or close-up re-check only): keep or reject |
+| Location | top-ranked authority from road class and route number | numbered routes where the candidates tie |
+| Triage | merge within 15 m or create a report | never |
+| Drafting | standard template | writes the description the authority reads |
+| Filing, follow-up | plain code after approval / on a schedule | never |
+
+### Decisions the system makes (and the trace shows why)
 
 | Decision | Evidence it acts on | Guard in code |
 |---|---|---|
@@ -91,8 +108,12 @@ deterministic mode, `results/agent_eval.json`)
 | Sent to an authority without approval / tool outside allow-list | 0 / 0 |
 | Processing time | 9 s for 36 events |
 
-**Live LLM agents** (`scripts/eval_agents.py --llm --singles 10`: 17 scenarios, free `nvidia/nemotron-3-ultra-550b-a55b`,
-`results/agent_eval_llm.json`)
+**With the AI judge** (`scripts/eval_agents.py --llm --singles 10`: 17 scenarios, free
+`nvidia/nemotron-3-ultra-550b-a55b`, `results/agent_eval_llm.json`). The table below is the earlier design, where free-
+running agents ran every step. The workflow design on the same scenarios: report precision 0.714 → 0.769, unlabelled
+detections rejected 1 of 5 → 2 of 5, real damage, jurisdiction and merging unchanged at 100%, 36 → 5 model calls,
+134k → 8k tokens, 307 s → 70 s for the two trips. A small sample: treat the precision gain as a direction, not a
+measurement.
 
 | Metric | Result |
 |---|---:|
@@ -219,7 +240,7 @@ roadsense/
   core/         verdict + severity + dedupe rules, verification, geocoding + jurisdiction, authority directory + payloads
   mcp_servers/  detector, geo, reports, municipality (FastMCP, stdio, annotated tools)
   agents/       OpenRouter client (fallback chain, rate limit, cache/replay), MCP toolbox, typed contracts,
-                specialists, orchestrator, circuit-breaker fallback
+                workflow steps + allow-lists (stages), trip workflow (orchestrator), deterministic safety net
   services/     agent API (FastAPI), mock Open311 server
   web/          web app: backend-for-frontend (FastAPI) + single-page app in static/ (vanilla JS, vendored Leaflet)
 scripts/        run_all, check, eval_verifier, eval_agents, smoke_llm, list_free_models

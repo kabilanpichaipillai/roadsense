@@ -72,9 +72,9 @@ const statusPill = (s) => { const [t, c] = STATUS[s] || [s, ""]; return `<span c
 const SEVERITY = { high: "red", medium: "amber", low: "" };
 const sevPill = (s) => `<span class="pill ${SEVERITY[s] || ""}">${esc(s ? s[0].toUpperCase() + s.slice(1) : "")}</span>`;
 const ACTORS = {
-  "agent:orchestrator": ["Orchestrator", "violet", "sparkle"], "agent:vision": ["Vision agent", "blue", "eye"],
-  "agent:location": ["Location agent", "cyan", "pin"], "agent:triage": ["Triage agent", "amber", "merge"],
-  "agent:filing": ["Filing agent", "green", "send"], "agent:follow_up": ["Follow-up agent", "green", "wrench"],
+  "agent:orchestrator": ["Workflow", "violet", "sparkle"], "agent:vision": ["Vision step", "blue", "eye"],
+  "agent:location": ["Location step", "cyan", "pin"], "agent:triage": ["Triage step", "amber", "merge"],
+  "agent:filing": ["Drafting step", "green", "send"], "agent:follow_up": ["Follow-up", "green", "wrench"],
   driver: ["Driver", "", "user"], edge: ["Edge device", "", "video"], fallback: ["Rule engine", "", "cpu"],
   scheduler: ["Scheduler", "", "clock"], retention: ["Retention policy", "", "shield"], dedupe: ["Dedupe", "", "merge"],
   "sync:city": ["City data sync", "cyan", "building"], service: ["Service", "", "cpu"],
@@ -124,6 +124,12 @@ function describe(a) {
     case a.action === "signed_in": return ["Signed in", ""];
     case a.action === "trip_done": return [`Finished trip ${subj}`, d?.summary || ""];
     case a.action === "plan": return ["Plan", typeof d === "string" ? d : ""];
+    case a.action === "decided": {
+      // One AI call over a batch of borderline items: what it was asked and what it chose
+      const items = (d?.items || []).map((x) => `${x.id}: ${x.verdict || x.jurisdiction || (x.description ? "drafted" : "")}`);
+      return [`${d?.title || "AI decision"} (${d?.asked ?? items.length})`, items.join(" · ")];
+    }
+    case a.action === "invalid_output": return ["AI answer didn't match the format; asked once more", ""];
     case a.action === "answer": {
       // The Follow-up agent answers in JSON; say what it found instead of printing it
       let j = null; try { j = JSON.parse(d?.content || ""); } catch {}
@@ -141,7 +147,7 @@ function describe(a) {
       }
       return ["Answer", d?.content || ""];
     }
-    case a.action === "task": return ["Received task", typeof d === "string" ? d : ""];
+    case a.action === "task": return ["Started a trip", typeof d === "string" ? d : ""];
     case a.action === "verify": return ["Verifier check (RT-DETR-L)", d?.reason || ""];
     case a.action === "recheck": return ["Close-up re-check", d?.reason || ""];
     case a.action === "event_received": return ["Detection uploaded", d?.class ? `${d.class} on trip ${d.trip}` : ""];
@@ -301,7 +307,7 @@ async function renderOverview() {
       <ol class="ov-lane">
         ${stop(s.detections, "Spotted on the dashcam", "Edge model, faces and plates blurred")}
         ${drop(s.false_alarms_removed, "false alarms dropped")}
-        ${stop(confirmed, "Confirmed by the Vision agent", "Second model checks every crop")}
+        ${stop(confirmed, "Confirmed by a second model", "RT-DETR-L checks every crop; AI judges borderline ones")}
         ${drop(s.duplicates_merged, "merged as duplicates")}
         ${stop(total, "Unique reports", pending ? `${num(pending)} waiting for you` : "None waiting", pending ? "is-hot" : "")}
         ${drop(total - sent, "not sent yet")}
@@ -694,10 +700,10 @@ async function renderTrips(params) {
         </form></div>
       <div class="card"><div class="card-head"><h2>How a trip is processed</h2></div><div class="card-body"><ul class="pipeline">
         <li>${avatar("edge")}<div><b>Edge device</b><div class="muted small">YOLOv8m at 5 frames/s, BoT-SORT tracking, best frame per defect, blur everything but the damage, place it on the road.</div></div></li>
-        <li>${avatar("agent:vision")}<div><b>Vision agent</b><div class="muted small">RT-DETR-L second opinion; close-up re-check; real, disputed or false alarm.</div></div></li>
-        <li>${avatar("agent:location")}<div><b>Location agent</b><div class="muted small">Road class and route number decide Halifax 311 or Nova Scotia Public Works.</div></div></li>
-        <li>${avatar("agent:triage")}<div><b>Triage agent</b><div class="muted small">Merges repeat sightings within 15 m; independent drivers raise priority.</div></div></li>
-        <li>${avatar("agent:filing")}<div><b>Filing agent</b><div class="muted small">Drafts the description; sends only what you approve.</div></div></li></ul></div></div>
+        <li>${avatar("agent:vision")}<div><b>Vision</b><div class="muted small">RT-DETR-L second opinion and close-up re-check. The AI judges only borderline detections: real damage or false alarm.</div></div></li>
+        <li>${avatar("agent:location")}<div><b>Location</b><div class="muted small">Road class and route number decide Halifax 311 or Nova Scotia Public Works; the AI picks only when the rules are unsure.</div></div></li>
+        <li>${avatar("agent:triage")}<div><b>Triage</b><div class="muted small">Merges repeat sightings within 15 m; independent drivers raise priority. Plain rules, no AI.</div></div></li>
+        <li>${avatar("agent:filing")}<div><b>Drafting</b><div class="muted small">The AI writes the description the city reads; nothing is sent until you approve it.</div></div></li></ul></div></div>
     </div>
     <div id="job" class="section"></div>
     <div class="card section"><div class="card-head"><h2>All trips</h2><span class="pill">${trips.length}</span></div>${tripsTable(trips)}</div>`;
@@ -783,7 +789,7 @@ async function renderActivity(params) {
   const query = (o) => "#/activity?" + new URLSearchParams(Object.entries({ actor: who, trip, tools: tools ? "1" : "", ...o }).filter(([, v]) => v && v !== "all")).toString();
   const groups = ["all", "agent:orchestrator", "agent:vision", "agent:location", "agent:triage", "agent:filing", "agent:follow_up", "driver"];
   view.innerHTML = `
-    <div class="toolbar"><div class="tabs" role="tablist">${groups.map((g) => `<button role="tab" aria-selected="${g === who}" class="${g === who ? "on" : ""}" data-g="${g}">${g === "all" ? "All" : esc(actor(g)[0].replace(" agent", ""))}</button>`).join("")}</div>
+    <div class="toolbar"><div class="tabs" role="tablist">${groups.map((g) => `<button role="tab" aria-selected="${g === who}" class="${g === who ? "on" : ""}" data-g="${g}">${g === "all" ? "All" : esc(actor(g)[0].replace(/ (agent|step)$/, ""))}</button>`).join("")}</div>
     ${trip ? `<span class="pill blue">Trip ${esc(trip)} <a href="${query({ trip: "" })}" aria-label="Clear trip filter" style="display:inline-flex;margin-left:2px">${icon("x")}</a></span>` : ""}<span class="spacer"></span>
       <label class="switch small"><input type="checkbox" id="show-tools" ${tools ? "checked" : ""}><span>Show tool calls${hiddenTools ? ` (${num(hiddenTools)})` : ""}</span></label></div>
     <div class="card">${list.length ? `<ul class="feed" id="act-feed">${list.slice(0, PAGE).map(activityItem).join("")}</ul>
@@ -835,11 +841,11 @@ async function renderAuthorities() {
       <div class="card kpi"><div class="label">Driver notifications<span class="ic green">${icon("wrench")}</span></div><div class="value">${a.notifications.length}</div><div class="hint">"Your pothole was fixed"</div></div>
     </div>
     <div class="card section"><div class="card-head"><h2>Halifax 311</h2><span class="desc">Open311 GeoReport v2</span><span class="pill">Mock server</span><span class="spacer"></span>
-      <a class="btn btn-sm" href="${esc(a.open311_inbox)}" target="_blank" rel="noopener">${icon("ext")}City staff inbox</a><button class="btn btn-primary btn-sm" id="follow">${icon("refresh")}Run Follow-up agent</button></div>
+      <a class="btn btn-sm" href="${esc(a.open311_inbox)}" target="_blank" rel="noopener">${icon("ext")}City staff inbox</a><button class="btn btn-primary btn-sm" id="follow">${icon("refresh")}Check for repairs</button></div>
       ${a.open311.length ? `<table class="table"><thead><tr><th>Request</th><th>Service</th><th>Location</th><th>Description</th><th>Status</th><th>Updated</th></tr></thead><tbody>
       ${a.open311.map((r) => `<tr><td class="mono">${esc(r.service_request_id)}</td><td class="mono">${esc(r.service_code)}</td><td>${esc(r.address)}</td><td style="max-width:420px">${esc(r.description)}</td><td>${r.status === "closed" ? `<span class="pill green">Repaired</span>` : `<span class="pill violet">Open</span>`}</td><td class="muted">${ago(r.updated_datetime)}</td></tr>`).join("")}</tbody></table>`
       : emptyState("building", "Nothing sent to Halifax yet", "Approve a report in Review to send it.")}
-      <div class="card-foot">Halifax has no public Open311 API today, so the demo files to a local GeoReport v2 server. Mark a request repaired in the city inbox, then run the Follow-up agent.</div></div>
+      <div class="card-foot">Halifax has no public Open311 API today, so the demo files to a local GeoReport v2 server. Mark a request repaired in the city inbox, then check for repairs.</div></div>
     <div class="card section"><div class="card-head"><h2>Nova Scotia Public Works</h2><span class="desc">Referrals</span><span class="spacer"></span><span class="muted small">No public API: 1-844-696-7737 · dpw-occ@novascotia.ca</span></div>
       ${a.referrals.length ? `<table class="table"><thead><tr><th>Referral</th><th>Location</th><th>Description</th></tr></thead><tbody>${a.referrals.map((r) => `<tr><td class="mono">${esc(r.id)}</td><td>${esc(r.address)}</td><td>${esc(r.description)}</td></tr>`).join("")}</tbody></table>` : emptyState("route", "No provincial referrals yet", "Damage on Highway 102 and other provincial roads is routed here.")}</div>
     <div class="card section"><div class="card-head"><h2>Driver notifications</h2></div>${a.notifications.length ? `<ul class="feed">${a.notifications.map((n) => `<li>${avatar("agent:follow_up")}<div style="flex:1">${esc(n.message)}</div><span class="when">${ago(n.ts)}</span></li>`).join("")}</ul>` : emptyState("wrench", "No repairs confirmed yet", "When a city closes a request, the Follow-up agent tells the drivers who reported it.")}</div>`;
@@ -875,7 +881,8 @@ async function renderSystem() {
         ${guard("The reviewer approves the exact payload", "Approval stores the payload and its SHA-256; delivery sends that snapshot and refuses if it was altered.")}
         ${guard("Rules decide severity and authority", "The agent's severity and jurisdiction are checked against the rules and map evidence; disagreements are logged.")}
         ${guard("Failed deliveries are retried", "Backoff from 1 minute to 6 hours, then the report is flagged for a manual resend.")}
-        ${guard("Agents can only use their own tools", "Per-agent allow-lists, enforced in the client, not the prompt.")}
+        ${guard("AI only where judgement helps", "A code workflow runs every step; the AI judges borderline detections, unsure jurisdictions and drafts descriptions, in batches.")}
+        ${guard("The AI never calls tools", "Each step uses its own allow-listed tools, enforced in code. The AI's typed answer is checked: unknown ids or choices outside the candidates are dropped and the rule decides.")}
         ${guard("No confirmation without evidence", "Damage is confirmed only with a second model's support; disagreements go to a human.")}
         ${guard("Append-only audit log", "Every plan, verdict and tool call is recorded; updates and deletes are blocked by the database.")}
         ${guard("Circuit breaker", "If an LLM fails or is rate-limited, a rule engine finishes the job over the same tools.")}

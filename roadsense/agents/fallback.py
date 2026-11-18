@@ -1,10 +1,11 @@
-"""Deterministic pipeline over the same MCP tools: the circuit breaker. Runs alone when no LLM is available, and
-after every agent run to complete any step the agents skipped. Every call is idempotent, so after a complete agent
-run it touches nothing, and the number of events it had to finish is reported as the fallback rate."""
+"""Deterministic pipeline over the same MCP tools and step allow-lists: the safety net. It runs after every trip and
+finishes any event the workflow left undecided or unreported (none, when the workflow completed), and the number it
+had to finish is reported as the fallback rate. Filing and follow-up are this code alone: they have nothing to judge."""
 from __future__ import annotations
 
 from ..common.db import audit, row, session
 from .mcp_client import Toolbox
+from .stages import use
 
 
 def _audit(action: str, subject: str, detail=None) -> None:
@@ -19,21 +20,21 @@ def _status(event_id: str) -> str:
 
 async def decide_event(toolbox: Toolbox, event_id: str) -> str:
     """verify → (re-check) → verdict by the rule in core.reports.suggested_verdict. Returns the final status."""
-    v = await toolbox.call("detector_verify", {"event_id": event_id})
+    v = await use(toolbox, "vision", "detector_verify", {"event_id": event_id})
     verdict, reason = v.get("suggested_verdict"), v.get("reason", "")
     if verdict == "recheck":
-        r = await toolbox.call("detector_recheck", {"event_id": event_id})
+        r = await use(toolbox, "vision", "detector_recheck", {"event_id": event_id})
         verdict, reason = r.get("suggested_verdict", "rejected"), r.get("reason", "")
-    await toolbox.call("detector_record_verdict", {"event_id": event_id, "verdict": verdict or "rejected",
+    await use(toolbox, "vision", "detector_record_verdict", {"event_id": event_id, "verdict": verdict or "rejected",
                                                    "rationale": f"rule: {reason}"})
     return _status(event_id)
 
 
 async def triage_event(toolbox: Toolbox, event: dict) -> dict:
-    sev = await toolbox.call("detector_severity", {"event_id": event["id"]})
-    place = await toolbox.call("geo_find_jurisdiction", {"lat": event["lat"], "lon": event["lon"]})
+    sev = await use(toolbox, "vision", "detector_severity", {"event_id": event["id"]})
+    place = await use(toolbox, "location", "geo_find_jurisdiction", {"lat": event["lat"], "lon": event["lon"]})
     best = (place.get("candidates") or [{"authority": place.get("municipality"), "evidence": "no candidates"}])[0]
-    return await toolbox.call("reports_create_or_merge", {
+    return await use(toolbox, "triage", "reports_create_or_merge", {
         "event_id": event["id"], "severity": sev.get("severity", "medium"),
         "jurisdiction": best["authority"] or "unknown", "rationale": f"rule: top candidate ({best['evidence']})"})
 
@@ -78,10 +79,10 @@ async def file_report(toolbox: Toolbox, report_id: int) -> dict:
     if r is None:
         return {"error": f"unknown report {report_id}"}
     if r["status"] == "submitted":
-        return {"ok": True, "service_request_id": r["service_request_id"], "channel": r["channel"], "by": "agent"}
-    result = await toolbox.call("city_submit_request", {"report_id": report_id})
+        return {"ok": True, "service_request_id": r["service_request_id"], "channel": r["channel"], "by": "already sent"}
+    result = await use(toolbox, "filing", "city_submit_request", {"report_id": report_id})
     _audit("filed" if result.get("ok") else "file_failed", f"report:{report_id}", result)
-    return {**result, "by": "fallback"}
+    return {**result, "by": "workflow"}
 
 
 async def follow_up(toolbox: Toolbox) -> dict:
@@ -93,7 +94,7 @@ async def follow_up(toolbox: Toolbox) -> dict:
             "(SELECT 1 FROM notifications n WHERE n.report_id = r.id)")]
     fixed = []
     for rid in submitted:
-        s = await toolbox.call("city_request_status", {"report_id": rid})
+        s = await use(toolbox, "follow_up", "city_request_status", {"report_id": rid})
         if s.get("fixed"):
             fixed.append(rid)
     with session() as conn:
@@ -101,7 +102,7 @@ async def follow_up(toolbox: Toolbox) -> dict:
             "SELECT * FROM reports r WHERE status = 'fixed' AND NOT EXISTS "
             "(SELECT 1 FROM notifications n WHERE n.report_id = r.id)")]
     for r in to_notify:
-        await toolbox.call("reports_notify_driver", {"report_id": r["id"], "message":
+        await use(toolbox, "follow_up", "reports_notify_driver", {"report_id": r["id"], "message":
                            f"Good news: the {r['class_name'].lower()} you reported at {r['address']} has been "
                            "repaired. Thanks for helping keep the roads safe!"})
     return {"checked": len(submitted), "fixed": sorted(set(fixed) | {r["id"] for r in fixed_unnotified})}

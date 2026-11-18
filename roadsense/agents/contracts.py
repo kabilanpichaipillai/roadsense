@@ -1,4 +1,5 @@
-"""Typed results each specialist must return. Validated on every run; one self-correction, then the fallback."""
+"""Typed answers the model must give at each judgement step. Validated on every call; one self-correction, then the
+rule decides. An answer about an id the model was not asked about, or with a choice it was not offered, is dropped."""
 from __future__ import annotations
 
 import json
@@ -32,30 +33,13 @@ class LocationResult(BaseModel):
     events: list[LocationItem]
 
 
-class TriageItem(BaseModel):
-    event_id: str
-    report_id: int | None = None
-    action: Literal["created", "merged", "already_linked", "skipped"]
-    rationale: str = Field(max_length=400)
-
-
-class TriageResult(BaseModel):
-    reports: list[TriageItem]
-
-
-class FilingItem(BaseModel):
+class DraftItem(BaseModel):
     report_id: int
-    outcome: Literal["drafted", "submitted", "failed"]
-    detail: str = Field(default="", max_length=600)
+    description: str = Field(min_length=30, max_length=600)
 
 
-class FilingResult(BaseModel):
-    reports: list[FilingItem]
-
-
-class FollowUpResult(BaseModel):
-    checked: int
-    fixed: list[int] = []
+class DraftResult(BaseModel):
+    reports: list[DraftItem]
 
 
 def extract_json(text: str) -> dict:

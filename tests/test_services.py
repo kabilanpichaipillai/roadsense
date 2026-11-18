@@ -2,9 +2,12 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
-from roadsense.agents.orchestrator import run_agent
+from roadsense.agents import orchestrator, stages
+from roadsense.agents.contracts import VisionResult
+from roadsense.agents.llm import LLMUnavailable
 from roadsense.services import agent_api
 from roadsense.services.mock_open311 import create_app
 
@@ -39,34 +42,93 @@ def test_event_upload_requires_token_and_valid_payload(db):
     assert c.get("/trips/trip1/events", headers=AUTH).json()[0]["status"] == "received"
 
 
-class StubLLM:
-    """Scripted model: first asks for an allowed and a forbidden tool, then answers."""
+class ScriptedLLM:
+    """A model that gives the scripted answers in order, or fails when the script says so."""
 
     last_model = "stub"
 
-    def __init__(self):
-        self.turn = 0
+    def __init__(self, *answers):
+        self.answers, self.asked = list(answers), []
 
-    async def chat(self, messages, tools):
-        self.turn += 1
-        if self.turn == 1:
-            call = lambda i, n: SimpleNamespace(id=i, function=SimpleNamespace(name=n, arguments='{"x": 1}'),
-                                                model_dump=lambda: {"id": i, "type": "function",
-                                                                    "function": {"name": n, "arguments": '{"x": 1}'}})
-            return SimpleNamespace(content="", tool_calls=[call("a", "allowed"), call("b", "submit_service_request")])
-        self.seen = [m for m in messages if m["role"] == "tool"]
-        return SimpleNamespace(content='{"done": true}', tool_calls=None)
+    async def chat(self, messages, tools=None):
+        self.asked.append(json.loads(messages[1]["content"]))
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return SimpleNamespace(content=answer, tool_calls=None)
+
+    def stats(self):
+        return {"calls": len(self.asked)}
 
 
-def test_agent_loop_enforces_tool_allow_list(db):
-    llm, calls = StubLLM(), []
+def judge_with(llm):
+    judge = orchestrator.Judge(use_llm=False)
+    judge.llm = llm
+    return judge
 
-    async def call(name, args):
-        calls.append(name)
-        return {"ok": True}
 
-    tools = [{"type": "function", "function": {"name": "allowed", "parameters": {"type": "object"}}}]
-    answer = asyncio.run(run_agent(llm, "system", "task", tools, call, "agent:test"))
-    assert answer == '{"done": true}'
-    assert calls == ["allowed"]  # the forbidden tool never reached a server
-    assert "not available" in llm.seen[1]["content"]
+def test_workflow_steps_only_reach_their_own_tools(db):
+    calls = []
+
+    class Box:
+        async def call(self, name, args):
+            calls.append(name)
+            return {"ok": True}
+
+    assert asyncio.run(stages.use(Box(), "vision", "detector_verify", {})) == {"ok": True}
+    for step, tool in (("drafting", "city_submit_request"), ("vision", "reports_create_or_merge"),
+                       ("follow_up", "city_submit_request")):
+        with pytest.raises(stages.ToolNotAllowed):
+            asyncio.run(stages.use(Box(), step, tool, {}))
+    assert calls == ["detector_verify"]  # refused tools never reached a server
+
+
+def test_judge_ignores_answers_it_did_not_ask_for(db):
+    llm = ScriptedLLM(json.dumps({"events": [
+        {"event_id": "e1", "verdict": "rejected", "rationale": "verifier 0.52, one frame"},
+        {"event_id": "e9", "verdict": "confirmed", "rationale": "an id it was never asked about"}]}))
+    out = asyncio.run(judge_with(llm).decide("agent:vision", "system", [{"event_id": "e1"}], VisionResult,
+                                             "event_id", "test"))
+    assert set(out) == {"e1"} and out["e1"]["verdict"] == "rejected"
+
+
+def test_judge_gets_one_correction_then_the_rule_decides(db):
+    llm = ScriptedLLM("not json", "still not json")
+    judge = judge_with(llm)
+    out = asyncio.run(judge.decide("agent:vision", "system", [{"event_id": "e1"}], VisionResult, "event_id", "t"))
+    assert out == {} and len(llm.asked) == 2 and judge.active  # a bad answer does not end the run
+
+
+def test_unavailable_model_hands_the_rest_to_the_rules(db):
+    llm = ScriptedLLM(LLMUnavailable("rate limit"))
+    judge = judge_with(llm)
+    items = [{"event_id": f"e{i}"} for i in range(orchestrator.BATCH + 3)]  # two batches
+    out = asyncio.run(judge.decide("agent:vision", "system", items, VisionResult, "event_id", "t"))
+    assert out == {} and judge.interrupted and len(llm.asked) == 1  # the second batch was never sent
+
+
+def test_location_keeps_the_rule_when_the_model_picks_a_non_candidate(db):
+    class Box:
+        async def call(self, name, args):
+            return {"road": "Bedford Highway", "road_ref": "NS 2", "municipality": "HRM", "candidates": [
+                {"authority": "Halifax Regional Municipality", "confidence": "medium", "evidence": "urban section"},
+                {"authority": "Nova Scotia Public Works", "confidence": "medium", "evidence": "numbered route"}]}
+
+    events = [{"id": "a", "lat": 44.68, "lon": -63.65}, {"id": "b", "lat": 44.69, "lon": -63.66}]
+    llm = ScriptedLLM(json.dumps({"events": [
+        {"event_id": "a", "jurisdiction": "Nova Scotia Public Works", "confidence": "medium", "rationale": "rural"},
+        {"event_id": "b", "jurisdiction": "City of Toronto", "confidence": "high", "rationale": "made up"}]}))
+    chosen = asyncio.run(orchestrator._location(Box(), judge_with(llm), events))
+    assert chosen["a"] == ("Nova Scotia Public Works", "rural")
+    assert chosen["b"][0] == "Halifax Regional Municipality" and chosen["b"][1].startswith("rule:")
+    assert {c["authority"] for c in llm.asked[0][0]["candidates"]} == {"Halifax Regional Municipality",
+                                                                       "Nova Scotia Public Works"}
+
+
+def test_borderline_rule():
+    strong = {"frames_seen": 6}
+    assert not orchestrator._borderline(strong, {"verifier_confidence": 0.9, "iou": 0.7}, rechecked=False)
+    assert orchestrator._borderline(strong, {"verifier_confidence": 0.55, "iou": 0.7}, rechecked=False)
+    assert orchestrator._borderline({"frames_seen": 1}, {"verifier_confidence": 0.9, "iou": 0.7}, rechecked=False)
+    assert orchestrator._borderline(strong, {"verifier_confidence": 0.9, "iou": 0.1}, rechecked=False)
+    assert orchestrator._borderline(strong, {"confidence": 0.8}, rechecked=True)
