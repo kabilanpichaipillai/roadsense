@@ -462,7 +462,9 @@ details.tool pre { margin: 0; padding: 10px; font-size: 11.5px; white-space: pre
   .table th, .table td { padding-left: 12px; padding-right: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  /* One pass, not an endless loop: a shortened infinite animation would otherwise repeat every frame */
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  .skeleton, .live-dot, .live-dot::after, .spin { animation: none !important; }
 }
 
 /* ---------- v2.1: sign-in, account menu, condition meter, forms ---------- */
@@ -1151,4 +1153,17 @@ dialog.sheet { width: min(520px, calc(100vw - 32px)); }
 @media (max-width: 760px) {
   .review-pos { border-right: 0; padding-right: 0; }
   .input-icon .input-kbd { display: none; }
+}
+
+/* ---------- touch screens: desktop density stays for mice; fingers get 40-44 px targets ---------- */
+@media (pointer: coarse) {
+  .btn, .input, .search-trigger, .user-chip { min-height: 44px; }
+  .btn-sm, .input-sm, .tabs button { min-height: 40px; }
+  .icon-btn { min-width: 44px; }
+  .nav a { height: 44px; }
+  .link-more { min-height: 40px; }
+  .ov-chip { display: inline-flex; align-items: center; min-height: 36px; padding-inline: 10px; }
+  .user-menu a, .user-menu button { min-height: 44px; }
+  .toast-x { width: 40px; height: 40px; margin: -10px -10px -10px 0; }
+  .table td a.mono { display: inline-flex; align-items: center; min-height: 36px; padding-inline: 4px; }
 }

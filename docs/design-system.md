@@ -111,7 +111,7 @@ Themes: light is the default. Dark follows `prefers-color-scheme` unless the use
 | Card | `.card` › `.card-head` (`h2`, `.desc`, `.spacer`) › `.card-body` / `.flush` › `.card-foot` | — | — |
 | Stat tile | `.card.kpi` › `.label` + `.ic.{tone}`, `.value`, `.hint` | tone per metric | hover lift |
 | Funnel | `.funnel` › `.stage` (`.t`, `.n`, `.rate`, `.bar`, `.delta`) | last stage green | — |
-| Segmented control | `.tabs` › `button.on` + `.n` count | — | hover, selected (`aria-selected`) |
+| Segmented control | `.tabs` › `button.on` + `.n` count | — | hover, selected (`aria-pressed`) |
 | Table | `.table-wrap` › `.table` · `tr.click` · `.row-arrow` · `.thumb` | — | row hover, focus, Enter opens |
 | Search input | `.input-icon` › `svg` + `.input` | — | focus ring |
 | Callout | `.callout.{amber,red,blue,green}` | — | — |
@@ -157,7 +157,7 @@ Themes: light is the default. Dark follows `prefers-color-scheme` unless the use
 ## Accessibility
 
 - Skip link to `#view`. Visible `:focus-visible` ring on every control.
-- Nav uses `aria-current` through `.active`. Segmented controls expose `role="tab"` and `aria-selected`.
+- Nav uses `aria-current` through `.active`. Segmented controls are filters, not tabs: a `role="group"` with a label, and `aria-pressed` buttons.
 - The palette is `role="dialog" aria-modal="true"` with a listbox and options, closes on Escape or a scrim click, and
   returns focus to the element that opened it.
 - Body text keeps at least 4.5:1 contrast in both themes. Status colour is never the only signal: every status badge

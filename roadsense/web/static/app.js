@@ -193,7 +193,7 @@ async function router() {
   $("#page-sub").textContent = sub;
   $("#crumb-current").textContent = title;
   document.title = `${title} · RoadSense`;
-  $("#sidebar").classList.remove("open");
+  if ($("#sidebar").classList.contains("open")) setDrawer(false, false);
   document.body.classList.add("loading");
   current = document.createElement("div");
   current.className = "ns-stagger";
@@ -483,7 +483,7 @@ async function renderMap(params) {
   const count = (s) => s === "all" ? all.length : all.filter((r) => r.status === s).length;
   view.innerHTML = `
     <div class="toolbar">
-      <div class="tabs" role="tablist">${["all", "pending_approval", "submitted", "fixed"].map((s) => `<button role="tab" aria-selected="${s === filter}" class="${s === filter ? "on" : ""}" data-s="${s}">${s === "all" ? "All" : STATUS[s][0]}<span class="n">${count(s)}</span></button>`).join("")}</div>
+      <div class="tabs" role="group" aria-label="Show reports by status">${["all", "pending_approval", "submitted", "fixed"].map((s) => `<button type="button" aria-pressed="${s === filter}" class="${s === filter ? "on" : ""}" data-s="${s}">${s === "all" ? "All" : STATUS[s][0]}<span class="n">${count(s)}</span></button>`).join("")}</div>
     </div>
     <div class="card"><div class="card-head"><div class="legend">${Object.entries(MAP_COLORS).map(([k, c]) => `<span><i style="background:${c}"></i>${STATUS[k][0]}</span>`).join("")}</div><span class="spacer"></span><span class="desc">Marker size = number of drivers</span></div><div id="big-map" class="map"></div></div>`;
   $$(".tabs button").forEach((b) => b.onclick = () => location.hash = `#/map?status=${b.dataset.s}`);
@@ -516,7 +516,7 @@ async function renderReports(params) {
       ${rs.map(row).join("")}</tbody>`;
   view.innerHTML = `
     <div class="toolbar">
-      <div class="tabs" role="tablist">${["all", "pending_approval", "submitted", "fixed", "rejected"].map((s) => `<button role="tab" aria-selected="${s === filter}" class="${s === filter ? "on" : ""}" data-s="${s}">${s === "all" ? "All" : STATUS[s][0]}<span class="n">${s === "all" ? all.length : count(s)}</span></button>`).join("")}</div>
+      <div class="tabs" role="group" aria-label="Show reports by status">${["all", "pending_approval", "submitted", "fixed", "rejected"].map((s) => `<button type="button" aria-pressed="${s === filter}" class="${s === filter ? "on" : ""}" data-s="${s}">${s === "all" ? "All" : STATUS[s][0]}<span class="n">${s === "all" ? all.length : count(s)}</span></button>`).join("")}</div>
       <span class="spacer"></span>
       <label class="input-icon">${icon("search")}<span class="sr-only">Filter reports</span><input class="input" id="report-q" type="search" placeholder="Filter by damage, street or #id" value="${esc(params.get("q") || "")}"><span class="kbd input-kbd" aria-hidden="true">/</span></label>
     </div>
@@ -963,7 +963,7 @@ async function renderActivity(params) {
   const query = (o) => "#/activity?" + new URLSearchParams(Object.entries({ actor: who, trip, tools: tools ? "1" : "", ...o }).filter(([, v]) => v && v !== "all")).toString();
   const groups = ["all", "agent:orchestrator", "agent:vision", "agent:location", "agent:triage", "agent:filing", "agent:follow_up", "driver"];
   view.innerHTML = `
-    <div class="toolbar"><div class="tabs" role="tablist">${groups.map((g) => `<button role="tab" aria-selected="${g === who}" class="${g === who ? "on" : ""}" data-g="${g}">${g === "all" ? "All" : esc(actor(g)[0].replace(/ (agent|step)$/, ""))}</button>`).join("")}</div>
+    <div class="toolbar"><div class="tabs" role="group" aria-label="Show activity by agent">${groups.map((g) => `<button type="button" aria-pressed="${g === who}" class="${g === who ? "on" : ""}" data-g="${g}">${g === "all" ? "All" : esc(actor(g)[0].replace(/ (agent|step)$/, ""))}</button>`).join("")}</div>
     ${trip ? `<span class="pill blue">Trip ${esc(trip)} <a href="${query({ trip: "" })}" aria-label="Clear trip filter" style="display:inline-flex;margin-left:2px">${icon("x")}</a></span>` : ""}<span class="spacer"></span>
       <label class="switch small"><input type="checkbox" id="show-tools" ${tools ? "checked" : ""}><span>Show tool calls${hiddenTools ? ` (${num(hiddenTools)})` : ""}</span></label></div>
     <div class="card">${list.length ? `<ul class="feed" id="act-feed">${list.slice(0, PAGE).map(activityItem).join("")}</ul>
@@ -1016,12 +1016,12 @@ async function renderAuthorities() {
     </div>
     <div class="card section"><div class="card-head"><h2>Halifax 311</h2><span class="desc">Open311 GeoReport v2</span><span class="pill">Mock server</span><span class="spacer"></span>
       <a class="btn btn-sm" href="${esc(a.open311_inbox)}" target="_blank" rel="noopener">${icon("ext")}City staff inbox</a><button class="btn btn-primary btn-sm" id="follow">${icon("refresh")}Check for repairs</button></div>
-      ${a.open311.length ? `<table class="table"><thead><tr><th>Request</th><th>Service</th><th>Location</th><th>Description</th><th>Status</th><th>Updated</th></tr></thead><tbody>
-      ${a.open311.map((r) => `<tr><td class="mono">${esc(r.service_request_id)}</td><td class="mono">${esc(r.service_code)}</td><td>${esc(r.address)}</td><td style="max-width:420px">${esc(r.description)}</td><td>${r.status === "closed" ? `<span class="pill green">Repaired</span>` : `<span class="pill violet">Open</span>`}</td><td class="muted">${ago(r.updated_datetime)}</td></tr>`).join("")}</tbody></table>`
+      ${a.open311.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Request</th><th>Service</th><th>Location</th><th>Description</th><th>Status</th><th>Updated</th></tr></thead><tbody>
+      ${a.open311.map((r) => `<tr><td class="mono">${esc(r.service_request_id)}</td><td class="mono">${esc(r.service_code)}</td><td>${esc(r.address)}</td><td style="max-width:420px">${esc(r.description)}</td><td>${r.status === "closed" ? `<span class="pill green">Repaired</span>` : `<span class="pill violet">Open</span>`}</td><td class="muted">${ago(r.updated_datetime)}</td></tr>`).join("")}</tbody></table></div>`
       : emptyState("building", "Nothing sent to Halifax yet", "Approve a report in Review to send it.")}
       <div class="card-foot">Halifax has no public Open311 API today, so the demo files to a local GeoReport v2 server. Mark a request repaired in the city inbox, then check for repairs.</div></div>
     <div class="card section"><div class="card-head"><h2>Nova Scotia Public Works</h2><span class="desc">Referrals</span><span class="spacer"></span><span class="muted small">No public API: 1-844-696-7737 · dpw-occ@novascotia.ca</span></div>
-      ${a.referrals.length ? `<table class="table"><thead><tr><th>Referral</th><th>Location</th><th>Description</th></tr></thead><tbody>${a.referrals.map((r) => `<tr><td class="mono">${esc(r.id)}</td><td>${esc(r.address)}</td><td>${esc(r.description)}</td></tr>`).join("")}</tbody></table>` : emptyState("route", "No provincial referrals yet", "Damage on Highway 102 and other provincial roads is routed here.")}</div>
+      ${a.referrals.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Referral</th><th>Location</th><th>Description</th></tr></thead><tbody>${a.referrals.map((r) => `<tr><td class="mono">${esc(r.id)}</td><td>${esc(r.address)}</td><td>${esc(r.description)}</td></tr>`).join("")}</tbody></table></div>` : emptyState("route", "No provincial referrals yet", "Damage on Highway 102 and other provincial roads is routed here.")}</div>
     <div class="card section"><div class="card-head"><h2>Driver notifications</h2></div>${a.notifications.length ? `<ul class="feed">${a.notifications.map((n) => `<li>${avatar("agent:follow_up")}<div style="flex:1">${esc(n.message)}</div><span class="when">${ago(n.ts)}</span></li>`).join("")}</ul>` : emptyState("wrench", "No repairs confirmed yet", "When a city closes a request, the Follow-up agent tells the drivers who reported it.")}</div>`;
   $("#follow").onclick = async () => {
     $("#follow").disabled = true;
@@ -1333,7 +1333,8 @@ palette.el.onclick = (e) => { if (e.target === palette.el) palette.close(); };
 $("#open-palette").onclick = () => palette.open();
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k" && !$("dialog[open]")) { e.preventDefault(); palette.el.hidden ? palette.open() : palette.close(); }
-  else if (e.key === "Escape" && $("#sidebar").classList.contains("open")) $("#sidebar").classList.remove("open");
+  else if (e.key === "Escape" && !$("#user-menu").hidden) setUserMenu(false, true);
+  else if (e.key === "Escape" && $("#sidebar").classList.contains("open")) setDrawer(false);
 });
 if (/Mac|iPhone|iPad/.test(navigator.platform)) $("#mod-key").textContent = "⌘";
 
@@ -1345,12 +1346,34 @@ function toggleTheme() {
 }
 
 /* ---------- boot ---------- */
-$("#menu").onclick = () => $("#sidebar").classList.toggle("open");
-$("#scrim").onclick = () => $("#sidebar").classList.remove("open");
+/* Phone drawer: while it is off-screen its links are inert (not tabbable); opening it moves focus in, closing hands it back */
+const PHONE = matchMedia("(max-width: 760px)");
+function setDrawer(open, restore = true) {
+  const sb = $("#sidebar"), had = sb.contains(document.activeElement);
+  sb.classList.toggle("open", open);
+  sb.inert = PHONE.matches && !open;
+  $("#menu").setAttribute("aria-expanded", open);
+  if (open) ($("#nav a.active") || $("#nav a"))?.focus();
+  else if (had && restore && PHONE.matches) $("#menu").focus();
+}
+PHONE.addEventListener("change", () => setDrawer(false, false));
+setDrawer(false, false);
+/* Account menu: a disclosure (button + links), closed by Escape, an outside click or focus leaving it */
+function setUserMenu(open, restore = false) {
+  const m = $("#user-menu");
+  m.hidden = !open;
+  $("#user-chip").setAttribute("aria-expanded", open);
+  if (open) $("a:not([hidden]), button", m)?.focus();
+  else if (restore) $("#user-chip").focus();
+}
+$("#menu").onclick = () => setDrawer(!$("#sidebar").classList.contains("open"));
+$("#scrim").onclick = () => setDrawer(false);
 $("#theme").onclick = toggleTheme;
 $("#shortcuts-btn").onclick = openShortcuts;
-$("#user-chip").onclick = () => { const m = $("#user-menu"); m.hidden = !m.hidden; };
-document.addEventListener("click", (e) => { if (!e.target.closest("#user-chip, #user-menu")) $("#user-menu").hidden = true; });
+$("#user-chip").onclick = () => setUserMenu($("#user-menu").hidden);
+$("#user-menu").addEventListener("focusout", (e) => { if (!e.relatedTarget?.closest?.("#user-menu, #user-chip")) setUserMenu(false); });
+$("#user-menu").addEventListener("click", (e) => { if (e.target.closest("a")) setUserMenu(false); });
+document.addEventListener("click", (e) => { if (!e.target.closest("#user-chip, #user-menu") && !$("#user-menu").hidden) setUserMenu(false); });
 $("#sign-out").onclick = signOut;
 window.addEventListener("hashchange", () => { if (session.user) router(); });
 (async () => {
