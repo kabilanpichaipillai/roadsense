@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="/static/app.css?v=19">
+  <link rel="stylesheet" href="/static/app.css?v=20">
   <script>try { const t = localStorage.getItem("rs-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
 </head>
 <body>
@@ -48,7 +48,7 @@
 
   <div class="main">
     <header class="topbar">
-      <button class="btn btn-ghost icon-btn menu-btn" id="menu" aria-label="Open menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+      <button class="btn btn-ghost icon-btn menu-btn" id="menu" type="button" aria-label="Menu" aria-expanded="false" aria-controls="sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
       <nav class="crumbs" aria-label="Breadcrumb"><span class="crumb-root">Halifax pilot</span><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg><span id="crumb-current" aria-current="page">Overview</span></nav>
       <div class="spacer"></div>
       <button class="btn btn-ghost icon-btn hide-sm" id="shortcuts-btn" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
@@ -60,11 +60,11 @@
       </button>
       <a class="btn btn-primary" href="#/trips?new=1" data-perm="upload" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="hide-sm">New trip</span></a>
       <div class="user-wrap">
-        <button class="user-chip" id="user-chip" type="button" aria-haspopup="menu" aria-label="Account" hidden></button>
-        <div class="user-menu card" id="user-menu" role="menu" hidden>
+        <button class="user-chip" id="user-chip" type="button" aria-expanded="false" aria-controls="user-menu" aria-label="Account" hidden></button>
+        <div class="user-menu card" id="user-menu" hidden>
           <div class="muted small" id="user-menu-email"></div>
-          <a href="#/users" role="menuitem" data-perm="admin" hidden>Manage users</a>
-          <button type="button" role="menuitem" id="sign-out">Sign out</button>
+          <a href="#/users" data-perm="admin" hidden>Manage users</a>
+          <button type="button" id="sign-out">Sign out</button>
         </div>
       </div>
     </header>
@@ -239,6 +239,6 @@
 <div class="login" id="login" hidden></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="/static/vendor/leaflet/leaflet.js"></script>
-<script src="/static/app.js?v=24"></script>
+<script src="/static/app.js?v=25"></script>
 </body>
 </html>
