@@ -23,6 +23,20 @@ v3 gives the signed-in app the public home page's language. What changed from v2
 
 The v2 notes below still describe the token layers, components and patterns; read colours and fonts through v3.
 
+### v3.1 reviewer workflow additions
+
+| Component | Class / helper | Notes |
+|---|---|---|
+| Evidence lightbox | `.photo-btn` › `.detail-photo` · `openLightbox()` · `dialog.lightbox` | Native `<dialog>`; click zooms 2.5× around the pointer; Esc closes and returns focus |
+| Shortcuts sheet | `openShortcuts()` · `dialog.sheet` | `?` anywhere, the topbar keyboard button, or the palette |
+| Review position | `.review-pos` › `.review-track` | "2 of 6" plus a bar in the review action bar |
+| Armed reject | `.btn-danger.is-armed` | First click arms for 4 s ("Click again to reject"); the second rejects |
+| Upload progress | `uploadTrip()` · `.upload-row` + `.progress[role=progressbar]` | XHR upload with MB sent, time left, Cancel, and a leave-page warning |
+| Toast | `toast(msg, ok)` | Errors stay until dismissed (`.toast-x`); success hides after 4.2 s, paused on hover |
+
+Also: `/` focuses the page's filter (else opens the palette), typing a number in the palette offers "Open report #N",
+the Reports filter is kept in the URL (`?q=`), and the tab title carries the review queue size.
+
 ---
 
 # RoadSense Design System v2
