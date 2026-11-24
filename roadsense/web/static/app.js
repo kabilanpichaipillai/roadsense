@@ -26,13 +26,20 @@ async function api(path, opts = {}) {
   return body;
 }
 
+/* Success fades on its own; an error stays until dismissed, so a failed send is never missed. Hovering pauses the timer. */
 function toast(msg, ok = true) {
   const t = $("#toast");
-  t.innerHTML = `${icon(ok ? "check" : "alert")}<span>${esc(msg)}</span>`;
+  t.innerHTML = `${icon(ok ? "check" : "alert")}<span class="toast-msg">${esc(msg)}</span><button type="button" class="toast-x" aria-label="Dismiss">${icon("x")}</button>`;
+  t.setAttribute("role", ok ? "status" : "alert");
   t.classList.toggle("err", !ok);
   t.classList.add("show");
+  const hide = () => t.classList.remove("show");
+  $(".toast-x", t).onclick = hide;
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => t.classList.remove("show"), 3800);
+  const arm = () => { clearTimeout(toast.t); if (ok) toast.t = setTimeout(hide, 4200); };
+  t.onmouseenter = () => clearTimeout(toast.t);
+  t.onmouseleave = arm;
+  arm();
 }
 
 /* ---------- icons (Lucide-style paths) ---------- */
@@ -57,6 +64,8 @@ const ICONS = {
   file: '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
   map: '<path d="M1 6v16l7-4 8 4 7-4V2l-7 4-8-4-7 4z"/><path d="M8 2v16M16 6v16"/>', activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   moon: '<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>',
+  zoom: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/>',
+  keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
 };
 const icon = (n, cls = "") => `<svg class="${cls}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[n] || ""}</svg>`;
 
@@ -242,6 +251,9 @@ async function refreshChrome() {
   try {
     const [pending, sys] = await Promise.all([api("/api/reports?status=pending_approval"), api("/api/system")]);
     $("#review-count").textContent = pending.length || "";
+    // The tab title carries the queue size, so a reviewer sees new work from another tab
+    const base = document.title.replace(/^\(\d+\) /, "");
+    document.title = pending.length ? `(${pending.length}) ${base}` : base;
     const llm = sys.health.llm;
     const live = llm.enabled;
     $("#agent-status").innerHTML = `
@@ -506,13 +518,16 @@ async function renderReports(params) {
     <div class="toolbar">
       <div class="tabs" role="tablist">${["all", "pending_approval", "submitted", "fixed", "rejected"].map((s) => `<button role="tab" aria-selected="${s === filter}" class="${s === filter ? "on" : ""}" data-s="${s}">${s === "all" ? "All" : STATUS[s][0]}<span class="n">${s === "all" ? all.length : count(s)}</span></button>`).join("")}</div>
       <span class="spacer"></span>
-      <label class="input-icon">${icon("search")}<span class="sr-only">Filter reports</span><input class="input" id="report-q" type="search" placeholder="Filter by damage, street or #id"></label>
+      <label class="input-icon">${icon("search")}<span class="sr-only">Filter reports</span><input class="input" id="report-q" type="search" placeholder="Filter by damage, street or #id" value="${esc(params.get("q") || "")}"><span class="kbd input-kbd" aria-hidden="true">/</span></label>
     </div>
     <div class="card card-body flush">${list.length ? `<div class="table-wrap"><table class="table"><thead><tr><th></th><th>Damage</th><th>Location</th><th>Authority</th><th>Severity</th><th>Drivers</th><th>Priority</th><th>Status</th><th></th></tr></thead>
       ${groups.map(group).join("")}</table></div>
         <div class="card-foot" id="report-foot">${list.length} report${list.length === 1 ? "" : "s"} from ${groups.length} trip${groups.length === 1 ? "" : "s"}</div>`
       : emptyState("inbox", "No reports here", "Reports appear after a trip is processed.")}</div>`;
-  $$(".tabs button").forEach((b) => b.onclick = () => location.hash = `#/reports?status=${b.dataset.s}`);
+  $$(".tabs button").forEach((b) => b.onclick = () => {
+    const term = $("#report-q")?.value.trim();
+    location.hash = `#/reports?status=${b.dataset.s}${term ? "&q=" + encodeURIComponent(term) : ""}`;
+  });
   $$("tr.click").forEach((tr) => {
     tr.onclick = () => location.hash = `#/reports?id=${tr.dataset.id}`;
     tr.onkeydown = (e) => { if (e.key === "Enter") tr.onclick(); };
@@ -532,7 +547,14 @@ async function renderReports(params) {
     if ($("#report-foot")) $("#report-foot").textContent = term ? `${shown} of ${list.length} reports, in ${tripsShown} trip${tripsShown === 1 ? "" : "s"}` : `${list.length} report${list.length === 1 ? "" : "s"} from ${groups.length} trip${groups.length === 1 ? "" : "s"}`;
   };
   $$(".group-toggle").forEach((b) => b.onclick = () => { b.setAttribute("aria-expanded", b.getAttribute("aria-expanded") !== "true"); apply(); });
-  $("#report-q").oninput = apply;
+  // The filter lives in the URL, so Back from a report returns to the same filtered list
+  const q = $("#report-q");
+  q.oninput = () => {
+    apply();
+    const qs = new URLSearchParams({ ...(filter !== "all" ? { status: filter } : {}), ...(q.value.trim() ? { q: q.value.trim() } : {}) }).toString();
+    history.replaceState(null, "", `#/reports${qs ? "?" + qs : ""}`);
+  };
+  if (q.value) apply();
 }
 
 const flags = (r) => [
@@ -563,7 +585,8 @@ function reportDetail(d) {
     <div class="card-head"><h2>${esc(r.class_name)} <span class="muted">#${r.id}</span></h2>${statusPill(r.status)}<span class="spacer"></span><span class="muted small">${esc(r.address || "")}</span></div>
     <div class="card-body detail">
       <div class="dgrid">
-        <div><img class="detail-photo" src="/api/media/${encodeURIComponent(r.best_event_id)}.jpg" alt="Privacy-blurred frame of the damage">
+        <div><button type="button" class="photo-btn" data-zoom="${esc(`${r.class_name} #${r.id} · ${r.address || ""}`)}" aria-label="Enlarge the photo of ${esc(r.class_name)} #${r.id}">
+            <img class="detail-photo" src="/api/media/${encodeURIComponent(r.best_event_id)}.jpg" alt="Privacy-blurred frame of the damage"><span class="photo-hint">${icon("zoom")}Enlarge</span></button>
           <div class="small muted" style="margin-top:6px">${icon("shield", "")} Everything except the damage was blurred on the device before upload.</div></div>
         <div class="dside">
           ${r.class_disputed ? `<div class="callout amber">${icon("alert")}<div><b>The two models disagree on the damage type.</b> YOLOv8m's label is kept; please check the photo.</div></div>` : ""}
@@ -605,7 +628,7 @@ function reportDetail(d) {
       </div>
     </div>
     ${(d.deliveries || []).length ? `<div class="card-body" style="padding-top:0"><h3 class="h3">Deliveries</h3><ul class="feed">${d.deliveries.map((x) => `<li>${avatar(x.ok ? "agent:filing" : "fallback")}<div style="flex:1;min-width:0"><span class="what">${esc(x.kind === "update" ? "Update" : "Submission")} via ${esc(CHANNELS[x.channel] || x.channel || "?")}</span> ${x.ok ? `<span class="pill green">ok</span>` : `<span class="pill red">failed</span>`}<div class="why">${esc(x.detail || "")}</div></div><span class="when">${ago(x.ts)}</span></li>`).join("")}</ul></div>` : ""}
-    ${pending && review ? `<div class="actionbar"><span class="muted small"><span class="kbd">J</span>/<span class="kbd">K</span> next/previous. Sending always needs a click.</span><span class="spacer"></span>
+    ${pending && review ? `<div class="actionbar"><span class="review-pos" id="review-pos" hidden></span><span class="muted small"><span class="kbd">J</span>/<span class="kbd">K</span> next/previous. Sending always needs a click.</span><span class="spacer"></span>
       <button class="btn btn-danger" id="reject">${icon("x")}Reject</button><button class="btn btn-primary btn-lg" id="approve">${icon("send")}Approve &amp; send to ${esc(authority(r.jurisdiction))}</button></div>` : ""}
     ${pending && !review ? `<div class="actionbar"><span class="muted small">${icon("lock")} Only reviewers can approve or reject reports. You are signed in as ${esc(session.user?.role || "")}.</span></div>` : ""}`;
 }
@@ -614,18 +637,28 @@ function bindDetail(d, after) {
   const id = d.report.id;
   const approve = $("#approve"), reject = $("#reject");
   if (approve) approve.onclick = async () => {
-    approve.disabled = true; approve.innerHTML = `${icon("refresh", "spin")}Sending…`;
+    approve.disabled = true; reject && (reject.disabled = true); approve.innerHTML = `${icon("refresh", "spin")}Sending…`;
     try {
       const job = await api(`/api/reports/${id}/approve`, { method: "POST", body: JSON.stringify({ payload_hash: d.payload_hash }) });
       const res = job.result || {};
       if (res.service_request_id) toast(`Sent to ${authority(res.authority)}: request ${res.service_request_id}`);
       else toast(`Not sent: ${res.error || job.error || "unknown error"}`, false);
     } catch (e) { toast(e.message, false); }
-    after();
+    after(); refreshChrome();
   };
+  // Rejecting also suppresses every repeat sighting, so it takes a second click; the arm expires after 4 s
   if (reject) reject.onclick = async () => {
+    if (!reject.classList.contains("is-armed")) {
+      reject.classList.add("is-armed");
+      reject.innerHTML = `${icon("x")}Click again to reject`;
+      clearTimeout(reject.t);
+      reject.t = setTimeout(() => { reject.classList.remove("is-armed"); reject.innerHTML = `${icon("x")}Reject`; }, 4000);
+      return;
+    }
+    clearTimeout(reject.t);
+    reject.disabled = true; approve && (approve.disabled = true);
     try { await api(`/api/reports/${id}/reject`, { method: "POST" }); toast("Rejected: it will not be sent, and repeat sightings are suppressed."); } catch (e) { toast(e.message, false); }
-    after();
+    after(); refreshChrome();
   };
   const sel = $("#reclass"), save = $("#reclass-save");
   if (sel && save) {
@@ -674,21 +707,97 @@ async function renderReview(params) {
     const d = await api(`/api/reports/${id}`);
     if (view !== stage()) return;
     $("#detail").innerHTML = reportDetail(d);
+    const pos = $("#review-pos"), at = ids.indexOf(id) + 1;
+    if (pos) { pos.hidden = false; pos.innerHTML = `<b>${at}</b> of ${ids.length}<span class="review-track" aria-hidden="true"><i style="width:${(at / ids.length) * 100}%"></i></span>`; }
+    animateView($("#detail"));
+    $(`.inbox-item[data-id="${id}"]`)?.scrollIntoView({ block: "nearest" });
     bindDetail(d, (stay) => renderReview(new URLSearchParams(`id=${stay ? id : ids[ids.indexOf(id) + 1] || ""}`)));
     reviewKeys.current = id;
   };
-  $$(".inbox-item").forEach((x) => x.onclick = () => open(Number(x.dataset.id)));
+  $$(".inbox-item").forEach((x) => {
+    x.tabIndex = 0;
+    x.setAttribute("role", "button");
+    x.onclick = () => open(Number(x.dataset.id));
+    x.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); x.onclick(); } };
+  });
   reviewKeys.ids = ids;
   reviewKeys.open = open;
   open(current);
 }
 const reviewKeys = { ids: [], current: null, open: null };
 document.addEventListener("keydown", (ev) => {
-  if (!location.hash.startsWith("#/review") || ev.target.matches("input, textarea") || ev.ctrlKey || ev.metaKey) return;
+  if (!location.hash.startsWith("#/review") || ev.target.matches("input, textarea, select") || ev.ctrlKey || ev.metaKey || $("dialog[open]") || !palette.el.hidden) return;
   const k = ev.key.toLowerCase(), i = reviewKeys.ids.indexOf(reviewKeys.current);
   // navigation only: approving or rejecting is never bound to a single key (it sends a report to a road authority)
   if (k === "j" && i < reviewKeys.ids.length - 1) reviewKeys.open(reviewKeys.ids[i + 1]);
   else if (k === "k" && i > 0) reviewKeys.open(reviewKeys.ids[i - 1]);
+});
+
+/* ---------- evidence lightbox: the reviewer's only look at the damage, so let them see it properly ---------- */
+function openLightbox(src, caption) {
+  let dlg = $("#lightbox");
+  if (!dlg) {
+    dlg = document.createElement("dialog");
+    dlg.id = "lightbox";
+    dlg.className = "lightbox";
+    dlg.setAttribute("aria-label", "Evidence photo");
+    dlg.innerHTML = `<div class="lb-bar"><span class="lb-cap"></span><span class="spacer"></span><span class="muted small hide-sm">Click the photo to zoom · <span class="kbd">Esc</span> close</span>
+        <button type="button" class="btn btn-ghost icon-btn lb-close" aria-label="Close">${icon("x")}</button></div>
+      <div class="lb-stage"><img alt="Privacy-blurred frame of the damage, enlarged"></div>`;
+    document.body.append(dlg);
+    const img = $("img", dlg), stageEl = $(".lb-stage", dlg);
+    $(".lb-close", dlg).onclick = () => dlg.close();
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+    dlg.addEventListener("close", () => { stageEl.classList.remove("is-zoomed"); dlg.opener?.focus?.(); });
+    // Zoom 2.5× around the point clicked, and follow the pointer while zoomed
+    const aim = (e) => { const r = img.getBoundingClientRect(); img.style.transformOrigin = `${((e.clientX - r.left) / r.width) * 100}% ${((e.clientY - r.top) / r.height) * 100}%`; };
+    img.onclick = (e) => { aim(e); stageEl.classList.toggle("is-zoomed"); };
+    img.onpointermove = (e) => { if (stageEl.classList.contains("is-zoomed")) aim(e); };
+  }
+  dlg.opener = document.activeElement;
+  $("img", dlg).src = src;
+  $(".lb-cap", dlg).textContent = caption || "";
+  dlg.showModal();
+  $(".lb-close", dlg).focus();
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest(".photo-btn");
+  if (b) openLightbox($("img", b).src, b.dataset.zoom);
+});
+
+/* ---------- keyboard shortcuts sheet (?) ---------- */
+const SHORTCUTS = [
+  ["Anywhere", [[["Ctrl", "K"], "Search, jump to a page or a report"], [["?"], "Show these shortcuts"], [["/"], "Filter the list on this page"], [["Esc"], "Close a dialog or the menu"]]],
+  ["Review", [[["J"], "Next report"], [["K"], "Previous report"], [["Enter"], "Open the focused report"]]],
+  ["Never on a key", [[[], "Approving and rejecting always need a click: they decide what reaches a road authority"]]],
+];
+function openShortcuts() {
+  let dlg = $("#shortcuts");
+  if (!dlg) {
+    dlg = document.createElement("dialog");
+    dlg.id = "shortcuts";
+    dlg.className = "sheet";
+    dlg.setAttribute("aria-labelledby", "shortcuts-h");
+    const mod = $("#mod-key").textContent;
+    dlg.innerHTML = `<div class="card-head"><h2 id="shortcuts-h">Keyboard shortcuts</h2><span class="spacer"></span><button type="button" class="btn btn-ghost icon-btn" aria-label="Close">${icon("x")}</button></div>
+      <div class="card-body sheet-body">${SHORTCUTS.map(([g, rows]) => `<section><h3 class="h3">${esc(g)}</h3><dl>${rows.map(([keys, what]) =>
+        `<div><dt>${keys.length ? keys.map((k) => `<span class="kbd">${esc(k === "Ctrl" ? mod : k)}</span>`).join("") : icon("lock")}</dt><dd>${esc(what)}</dd></div>`).join("")}</dl></section>`).join("")}</div>`;
+    document.body.append(dlg);
+    $(".card-head button", dlg).onclick = () => dlg.close();
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+  }
+  if (!dlg.open) dlg.showModal();
+}
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey || !session.user || !palette.el.hidden || $("dialog[open]")) return;
+  if (e.target.closest?.("input, textarea, select, [contenteditable]")) return;
+  if (e.key === "?" || (e.key === "/" && e.shiftKey)) { e.preventDefault(); openShortcuts(); }
+  else if (e.key === "/") {
+    // The page's own filter if it has one, otherwise the palette
+    e.preventDefault();
+    const field = $("#view input[type=search]");
+    if (field) { field.focus(); field.select(); } else palette.open();
+  }
 });
 
 /* ---------- Trips (upload + live progress) ---------- */
@@ -756,10 +865,57 @@ async function renderTrips(params) {
     if (gps.files[0]) fd.append("gps", gps.files[0]);
     fd.append("simulate", sim.checked);
     $("#start").disabled = true;
-    try { const job = await api("/api/trips", { method: "POST", body: fd }); watchJob(job.id); }
-    catch (e) { toast(e.message, false); $("#start").disabled = false; }
+    try {
+      const job = await uploadTrip(fd, video.files[0]);
+      // The reviewer may have moved on while it uploaded: only draw live progress if this page is still showing
+      if ($("#job") && view === stage()) watchJob(job.id); else toast("Trip uploaded. The agents are processing it; see Trips for progress.");
+    }
+    catch (e) { if (e.name !== "AbortError") toast(e.message, false); if ($("#start")) $("#start").disabled = false; }
   };
   if (running) watchJob(running.id);
+}
+
+/* A dashcam file can be hundreds of MB: show bytes sent, time left and a Cancel, and warn before the tab closes mid-upload.
+   fetch() has no upload progress, so this one call uses XHR. */
+function uploadTrip(fd, file) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const mb = (b) => (b / 1048576).toFixed(b < 10485760 ? 1 : 0);
+    const started = performance.now();
+    const guard = (e) => { e.preventDefault(); e.returnValue = ""; };
+    const done = () => { window.removeEventListener("beforeunload", guard); };
+    const clearJob = () => { const j = $("#job"); if (j) j.innerHTML = ""; };
+    window.addEventListener("beforeunload", guard);
+    $("#job").innerHTML = `<div class="card"><div class="card-head"><h2>Uploading ${esc(file.name)}</h2><span class="pill blue">Uploading</span><span class="spacer"></span>
+        <button type="button" class="btn btn-sm" id="upload-cancel">${icon("x")}Cancel upload</button></div>
+      <div class="card-body"><div class="upload-row"><span class="mono" id="upload-pct">0%</span><span class="muted small" id="upload-meta">${mb(file.size)} MB to send</span></div>
+        <div class="progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="upload-bar"><i></i></div></div></div>`;
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable || !$("#upload-bar")) return;
+      const p = e.loaded / e.total, secs = (performance.now() - started) / 1000;
+      const left = p > 0.02 ? Math.max(0, Math.round(secs / p - secs)) : null;
+      $("#upload-bar i").style.width = `${p * 100}%`;
+      $("#upload-bar").setAttribute("aria-valuenow", Math.round(p * 100));
+      $("#upload-pct").textContent = `${Math.round(p * 100)}%`;
+      $("#upload-meta").textContent = p >= 1 ? "Sent. The edge device is starting…"
+        : `${mb(e.loaded)} of ${mb(e.total)} MB${left != null ? ` · about ${left < 60 ? left + " s" : Math.ceil(left / 60) + " min"} left` : ""}`;
+    };
+    xhr.onload = () => {
+      done();
+      let body = xhr.responseText; try { body = JSON.parse(body); } catch {}
+      if (xhr.status === 401) { showLogin(); return reject(new Error("Please sign in")); }
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(body);
+      clearJob();
+      reject(new Error(typeof body?.detail === "string" ? body.detail : `Upload failed (${xhr.status})`));
+    };
+    xhr.onerror = () => { done(); clearJob(); reject(new Error("Upload failed: the connection dropped. Check the network and try again.")); };
+    xhr.onabort = () => { done(); clearJob(); toast("Upload cancelled."); const e = new Error("cancelled"); e.name = "AbortError"; reject(e); };
+    $("#upload-cancel").onclick = () => xhr.abort();
+    xhr.open("POST", "/api/trips");
+    xhr.setRequestHeader("X-CSRF-Token", session.csrf);
+    xhr.withCredentials = true;
+    xhr.send(fd);
+  });
 }
 
 const STEPS = [["edge", "Edge device", "video"], ["upload", "Upload", "upload"], ["agents", "Agents", "sparkle"], ["done", "Ready to review", "check"]];
@@ -1137,9 +1293,13 @@ const palette = {
       { group: "Actions", label: "New trip", hint: "Upload a dashcam video", icon: "plus", run: () => { location.hash = "#/trips"; setTimeout(() => $("#video")?.click(), 300); } },
       { group: "Actions", label: "Toggle theme", hint: "Light / dark", icon: "moon", run: toggleTheme },
       ...(session.authEnabled && session.user ? [{ group: "Actions", label: "Sign out", hint: session.user.email, icon: "lock", run: signOut }] : []),
+      { group: "Actions", label: "Keyboard shortcuts", hint: "?", icon: "keyboard", run: openShortcuts },
     ];
     const reports = this.pending.map((r) => ({ group: "Awaiting review", label: `${r.class_name} #${r.id}`, hint: r.address || "", icon: "inbox", run: () => (location.hash = `#/review?id=${r.id}`) }));
-    return [...nav, ...acts, ...reports];
+    // Typing a report number ("42" or "#42") offers a direct jump, even to reports that are not waiting for review
+    const n = this.q.value.trim().match(/^#?(\d{1,7})$/)?.[1];
+    const jump = n ? [{ group: "Jump to", label: `Open report #${n}`, hint: "Any status", icon: "file", always: true, run: () => (location.hash = `#/reports?id=${n}`) }] : [];
+    return [...jump, ...nav, ...acts, ...reports];
   },
   open() {
     this.opener = document.activeElement;
@@ -1148,7 +1308,7 @@ const palette = {
   close() { this.el.hidden = true; this.opener?.focus?.(); },
   render() {
     const term = this.q.value.trim().toLowerCase();
-    this.items = this.commands().filter((c) => !term || `${c.label} ${c.hint} ${c.group}`.toLowerCase().includes(term));
+    this.items = this.commands().filter((c) => c.always || !term || `${c.label} ${c.hint} ${c.group}`.toLowerCase().includes(term));
     this.sel = Math.min(this.sel, Math.max(this.items.length - 1, 0));
     let group = "";
     this.list.innerHTML = this.items.length ? this.items.map((c, i) => {
@@ -1172,7 +1332,7 @@ palette.list.onmousemove = (e) => { const li = e.target.closest(".palette-item")
 palette.el.onclick = (e) => { if (e.target === palette.el) palette.close(); };
 $("#open-palette").onclick = () => palette.open();
 document.addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); palette.el.hidden ? palette.open() : palette.close(); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k" && !$("dialog[open]")) { e.preventDefault(); palette.el.hidden ? palette.open() : palette.close(); }
   else if (e.key === "Escape" && $("#sidebar").classList.contains("open")) $("#sidebar").classList.remove("open");
 });
 if (/Mac|iPhone|iPad/.test(navigator.platform)) $("#mod-key").textContent = "⌘";
@@ -1188,6 +1348,7 @@ function toggleTheme() {
 $("#menu").onclick = () => $("#sidebar").classList.toggle("open");
 $("#scrim").onclick = () => $("#sidebar").classList.remove("open");
 $("#theme").onclick = toggleTheme;
+$("#shortcuts-btn").onclick = openShortcuts;
 $("#user-chip").onclick = () => { const m = $("#user-menu"); m.hidden = !m.hidden; };
 document.addEventListener("click", (e) => { if (!e.target.closest("#user-chip, #user-menu")) $("#user-menu").hidden = true; });
 $("#sign-out").onclick = signOut;
