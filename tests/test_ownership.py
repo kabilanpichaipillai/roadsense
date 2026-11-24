@@ -113,3 +113,60 @@ def test_owner_offline_makes_no_request(db, monkeypatch):
     monkeypatch.setattr(ownership.httpx, "get", _Fake())  # any call would pop from an empty list and fail
     with session() as conn:
         assert ownership.road_owner(conn, LAT, LON) is None
+
+
+# ---------------- ownership-first jurisdiction ----------------
+from roadsense.core import geo  # noqa: E402
+
+
+def _owner(code, street="Some St", desc=None, tie=None):
+    return {"owner": code, "owner_desc": desc or code, "street": street, "distance_m": 4.0, "tie": tie}
+
+
+def _place(muni="Town of Bridgewater", cls="residential", ref=None):
+    return {"road": "Some St", "road_class": cls, "road_ref": ref, "municipality": muni}
+
+
+def test_provincial_owner_routes_to_province():
+    c = geo.jurisdiction_candidates(_place(), _owner("TIR", "Duke St"))
+    assert c[0]["authority"] == geo.PROVINCIAL and c[0]["confidence"] == "high" and "NSRN" in c[0]["evidence"]
+    assert c[0]["source"] == "nsrn" and c[1]["confidence"] == "low"
+
+
+def test_municipal_owner_routes_to_municipality_at_point():
+    c = geo.jurisdiction_candidates(_place(), _owner("M", "King St"))
+    assert len(c) == 1 and c[0]["authority"] == "Town of Bridgewater" and c[0]["confidence"] == "high"
+
+
+def test_municipal_owner_outside_boundaries():
+    c = geo.jurisdiction_candidates(_place(muni=None), _owner("M"))
+    assert c[0]["authority"] is None and c[0]["confidence"] == "medium"
+    assert "outside known boundaries" in c[0]["evidence"]
+
+
+def test_intersection_tie_gives_two_medium_candidates():
+    tie = {"owner": "M", "owner_desc": "Municipal", "street": "King St", "distance_m": 6.0}
+    c = geo.jurisdiction_candidates(_place(), _owner("TIR", "Highway 3", tie=tie))
+    assert {x["authority"] for x in c} == {geo.PROVINCIAL, "Town of Bridgewater"}
+    assert {x["confidence"] for x in c} == {"medium"}
+
+
+@pytest.mark.parametrize("code, name", [("P", "Private road"), ("F", "Federal road")])
+def test_non_public_owner_is_flagged(code, name):
+    c = geo.jurisdiction_candidates(_place(), _owner(code))
+    assert len(c) == 1 and c[0]["authority"] == name and c[0]["confidence"] == "low"
+
+
+@pytest.mark.parametrize("owner", [None, {"owner": None, "owner_desc": None, "street": None, "distance_m": None,
+                                          "tie": None}])
+def test_no_owner_falls_back_to_rules(owner):
+    place = _place(cls="motorway", ref="NS 103")
+    rules = geo.jurisdiction_candidates(place)
+    assert geo.jurisdiction_candidates(place, owner) == rules and rules[0]["source"] == "rules"
+
+
+def test_find_jurisdiction_uses_boundary_municipality_offline(db):
+    from roadsense.mcp_servers.geo_server import find_jurisdiction
+    out = find_jurisdiction(44.0390, -64.7160)  # Liverpool: outside the offline Halifax fixture
+    assert out["municipality"] == "Region of Queens Municipality" and out["owner_source"] == "rules"
+    assert out["candidates"][0]["authority"] == "Region of Queens Municipality"

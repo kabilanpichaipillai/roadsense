@@ -147,16 +147,53 @@ def snap_to_road(conn: sqlite3.Connection, lat: float, lon: float) -> dict:
     return out
 
 
-def jurisdiction_candidates(place: dict) -> list[dict]:
+NON_PUBLIC = {"P": "Private road", "F": "Federal road"}
+
+
+def _owned_by(code: str, desc: str | None, street: str | None, muni: str | None, provincial: str) -> dict:
+    road = street or "road"
+    if code == "TIR":
+        return {"authority": provincial, "confidence": "high", "evidence": f"NSRN: {road} is owned by the Province"}
+    if code == "M":
+        if muni:
+            return {"authority": muni, "confidence": "high", "evidence": f"NSRN: {road} is municipally owned, in {muni}"}
+        return {"authority": None, "confidence": "medium",
+                "evidence": f"NSRN: {road} is municipally owned, but the point is outside known boundaries"}
+    name = NON_PUBLIC.get(code, f"Other owner ({desc or code})")
+    return {"authority": name, "confidence": "low",
+            "evidence": f"NSRN: {road} is owned by {desc or code}; no public road authority to file with"}
+
+
+def jurisdiction_candidates(place: dict, owner: dict | None = None) -> list[dict]:
     """Who maintains this road, best first, with confidence and the evidence for each.
 
-    100-series highways and motorways are provincial. Other numbered provincial routes (NS 2, Trunk 7, Route 333...)
-    run through municipalities and ownership varies by section, so they are returned as ambiguous for the agent to
-    weigh; local streets belong to the municipality."""
+    With a road owner from the Nova Scotia Road Network (core.ownership.road_owner) the owner decides: the Province
+    (TIR), the municipality the point is in, or a non-public owner. Two owners at an intersection are both offered at
+    medium confidence for the Location step to weigh.
+
+    Without one, the road class decides: 100-series highways and motorways are provincial. Other numbered provincial
+    routes (NS 2, Trunk 7, Route 333...) run through municipalities and ownership varies by section, so they are
+    returned as ambiguous for the agent to weigh; local streets belong to the municipality."""
     from .open311 import rules
 
     r = rules()
     provincial = r.get("provincial_authority", PROVINCIAL)
+    if owner and owner.get("owner"):
+        muni = place.get("municipality")
+        best = _owned_by(owner["owner"], owner.get("owner_desc"), owner.get("street"), muni, provincial)
+        tie = owner.get("tie")
+        if tie:
+            other = _owned_by(tie["owner"], tie.get("owner_desc"), tie.get("street"), muni, provincial)
+            return [{**c, "confidence": "medium", "source": "nsrn"} for c in (best, other)]
+        out = [{**best, "source": "nsrn"}]
+        if owner["owner"] == "TIR":
+            out.append({"authority": muni, "confidence": "low", "evidence": "municipality surrounding the road",
+                        "source": "nsrn"})
+        return out
+    return [{**c, "source": "rules"} for c in _rule_candidates(place, r, provincial)]
+
+
+def _rule_candidates(place: dict, r: dict, provincial: str) -> list[dict]:
     lo, hi = r.get("provincial_route_range", [100, 199])
     muni, cls, ref = place.get("municipality"), place.get("road_class"), place.get("road_ref") or ""
     numbers = [int(n) for n in re.findall(r"\d+", ref)]

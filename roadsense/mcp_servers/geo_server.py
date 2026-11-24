@@ -6,7 +6,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from ..common.db import session
-from ..core import geo, open311
+from ..core import geo, open311, ownership
 
 mcp = FastMCP("roadsense-geo")
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
@@ -32,14 +32,19 @@ def find_jurisdiction(lat: float, lon: float) -> dict:
     candidate can be reached (open311 API, referral package, or none)."""
     _check(lat, lon)
     with session() as conn:
-        place = geo.reverse_geocode(conn, lat, lon)
+        place = dict(geo.reverse_geocode(conn, lat, lon))
+        owner = ownership.road_owner(conn, lat, lon)
+    # the province's own boundaries name the municipality; OSM's address field is the fallback outside them
+    place["municipality"] = (ownership.municipality_at(lat, lon) or {}).get("name") or place.get("municipality")
+    ranked = geo.jurisdiction_candidates(place, owner)
     candidates = []
-    for c in geo.jurisdiction_candidates(place):
+    for c in ranked:
         info = open311.service_info(c["authority"])
         candidates.append({**c, "authority": info["authority"] if info else c["authority"],
                            "channel": info["channel"] if info else "none"})
     return {"address": place.get("address"), "road": place.get("road"), "road_class": place.get("road_class"),
-            "road_ref": place.get("road_ref"), "municipality": place.get("municipality"), "candidates": candidates}
+            "road_ref": place.get("road_ref"), "municipality": place.get("municipality"),
+            "owner_source": ranked[0]["source"], "candidates": candidates}
 
 
 if __name__ == "__main__":
