@@ -195,7 +195,12 @@ def _referral_submit(payload: dict, info: dict, report: dict | None) -> dict:
         except (OSError, smtplib.SMTPException) as e:
             raise DeliveryError(f"referral email failed: {e}") from e
         emailed = True
-    how = f"emailed to {info['referral_email']}" if emailed else "prepared (send it to " + str(info.get("contact")) + ")"
+    if emailed:
+        how = f"emailed to {info['referral_email']}"
+    elif info.get("contact"):
+        how = f"prepared (send it to {info['contact']})"
+    else:
+        how = "prepared (no contact on file: forward manually)"
     return {"channel": "referral", "service_request_id": ref_id,
             "notice": f"Referral package {how} for {info['authority']}."}
 

@@ -170,3 +170,23 @@ def test_find_jurisdiction_uses_boundary_municipality_offline(db):
     out = find_jurisdiction(44.0390, -64.7160)  # Liverpool: outside the offline Halifax fixture
     assert out["municipality"] == "Region of Queens Municipality" and out["owner_source"] == "rules"
     assert out["candidates"][0]["authority"] == "Region of Queens Municipality"
+
+
+# ---------------- directory ----------------
+from roadsense.core import delivery, open311  # noqa: E402
+
+
+def test_every_ns_municipality_has_a_channel():
+    for m in ownership.municipalities():
+        info = open311.service_info(m["name"])
+        assert info is not None, m["name"]
+        assert info["channel"] == ("open311" if m["name"] == "Halifax Regional Municipality" else "referral")
+
+
+def test_referral_without_contact_says_forward_manually(db):
+    info = open311.service_info("Region of Queens Municipality")
+    payload = {"authority": info["authority"], "channel": "referral", "service_code": "POTHOLE", "lat": 44.039,
+               "long": -64.716, "address_string": "Gorham St", "description": "Pothole.", "media_url": "x",
+               "attributes": {}}
+    notice = delivery.submit(payload)["notice"]
+    assert "no contact on file: forward manually" in notice and "None" not in notice
