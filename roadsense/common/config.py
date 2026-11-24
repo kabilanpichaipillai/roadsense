@@ -61,6 +61,10 @@ class Settings:
     # a sighting near a report a human rejected is suppressed (not re-proposed) for this many days
     rejected_suppress_days: int = int(os.environ.get("ROADSENSE_REJECTED_SUPPRESS_DAYS", "90"))
     authorities_file: str = os.environ.get("ROADSENSE_AUTHORITIES_FILE", "")  # tenant directory; default: built-in
+    # impact estimate: cost and handle time of one 311 contact (low end of Toronto's published $11-16 per call and
+    # its 293 s average handle time; see docs/business-case.md). A city sets its own.
+    cost_per_contact: float = float(os.environ.get("ROADSENSE_COST_PER_CONTACT", "11"))
+    minutes_per_contact: float = float(os.environ.get("ROADSENSE_MINUTES_PER_CONTACT", "4.9"))
 
     # ---- evidence links and privacy ----
     # base URL the road authority uses to fetch evidence photos (must be reachable from the city's network)

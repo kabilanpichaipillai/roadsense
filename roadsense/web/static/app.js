@@ -314,6 +314,7 @@ async function renderOverview() {
         ${stop(sent, "Sent to an authority", province ? `${num(province)} to the province` : "Via Open311")}
       </ol>
     </section>
+    ${impactCard(s.impact)}
     <div class="ov-row section">
       <section class="card ov-map"><div class="card-head"><h2>Where the damage is</h2><span class="spacer"></span>${more("#/map", "Open full map")}</div><div id="mini-map" class="map-mini"></div></section>
       <section class="card"><div class="card-head"><h2>Worth a look</h2></div><ul class="ov-sigs">${signals}</ul></section>
@@ -325,6 +326,23 @@ async function renderOverview() {
         ${trips.length ? `<ul class="ov-trips">${trips.map(tripItem).join("")}</ul>` : emptyState("video", "No trips yet", "Upload a dashcam video with its GPS track.", `<a class="btn btn-primary" style="margin-top:12px" href="#/trips?new=1">${icon("upload")}New trip</a>`)}</section>
     </div>`;
   drawMap("mini-map", reports, { zoom: 14, interactive: false });
+}
+
+/* What the pipeline saved the city: only work that never reached a person is counted. Assumptions shown inline. */
+function impactCard(m) {
+  if (!m) return "";
+  const a = m.assumptions || {};
+  const hours = m.staff_minutes_saved / 60;
+  const tile = (ic, tone, value, label, hint) => `<div class="card kpi"><div class="label">${label}<span class="ic ${tone}">${icon(ic)}</span></div><div class="value">${value}</div><div class="hint">${hint}</div></div>`;
+  return `<section class="section" aria-labelledby="ov-impact-h">
+    <div class="card-head" style="padding-inline:0"><h2 id="ov-impact-h">What this saved the city</h2><span class="spacer"></span>
+      <span class="desc">At $${esc(a.cost_per_contact)} and ${esc(a.minutes_per_contact)} min per 311 contact · only work that never reached a person is counted</span></div>
+    <div class="grid kpis">
+      ${tile("merge", "blue", num(m.duplicate_contacts_avoided), "Duplicate reports avoided", "Repeat sightings merged, never re-filed")}
+      ${tile("route", "cyan", num(m.routed_to_province), "Sent to the right desk first", "Provincial roads skip city 311")}
+      ${tile("eye", "amber", num(m.false_alarms_filtered), "False alarms filtered", "Before any person looked")}
+      ${tile("activity", "green", hours >= 1 ? hours.toFixed(1) + " h" : num(Math.round(m.staff_minutes_saved)) + " min", "311 staff time saved", `$${num(Math.round(m.intake_cost_avoided))} intake cost avoided`)}
+    </div></section>`;
 }
 
 // Consecutive decisions of the same kind by the same actor read as one line: "Rejected by a reviewer · 4 reports"

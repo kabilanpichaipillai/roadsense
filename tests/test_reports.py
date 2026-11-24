@@ -58,3 +58,14 @@ def test_offline_geocoder_finds_halifax(db):
 def test_directory_resolves_community_aliases():
     assert open311.service_info("Dartmouth")["authority"] == "Halifax Regional Municipality"
     assert open311.service_info("Atlantis") is None
+
+
+def test_impact_counts_only_work_that_never_reached_a_person():
+    from roadsense.core import impact
+    m = impact.estimate({"duplicates_merged": 3, "suppressed_after_rejection": 1, "false_alarms_removed": 5,
+                         "authorities": {"Nova Scotia Public Works": 2, "Halifax Regional Municipality": 9}},
+                        cost_per_contact=11, minutes_per_contact=5)
+    assert m["duplicate_contacts_avoided"] == 4 and m["routed_to_province"] == 2
+    assert m["contacts_avoided"] == 6 and m["staff_minutes_saved"] == 30 and m["intake_cost_avoided"] == 66
+    assert m["false_alarms_filtered"] == 5          # shown, but not priced: no person would have filed them
+    assert impact.estimate({}, 11, 5)["intake_cost_avoided"] == 0

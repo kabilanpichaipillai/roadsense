@@ -132,3 +132,22 @@ def test_bedford_highway_follows_the_shore_not_the_basin():
     assert geo._offline(44.68034, -63.645425)["road"] is None
     for t in (0.0, 0.25, 0.5, 0.75, 1.0):
         assert geo._offline(*geo.point_on_road(1, t))["road"] == "Bedford Highway"
+
+
+def test_verifier_failure_never_rejects_real_damage(db):
+    import asyncio
+
+    from roadsense.agents import fallback
+
+    add_event("ev-oom", 44.643, -63.58, status="received")
+    calls = []
+
+    class Box:  # the detector server crashed (e.g. out of memory): every vision tool returns an error
+        async def call(self, name, args):
+            calls.append(name)
+            return {"error": "OpenBLAS error: Memory allocation failed"}
+
+    assert asyncio.run(fallback.decide_event(Box(), "ev-oom")) == "received"   # waits for a retry
+    assert "detector_record_verdict" not in calls and calls.count("detector_verify") == 2
+    with session() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM audit WHERE action = 'verifier_unavailable'").fetchone()[0] == 1

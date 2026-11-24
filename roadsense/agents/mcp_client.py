@@ -30,7 +30,11 @@ class Toolbox:
         self._stack = AsyncExitStack()
 
     async def __aenter__(self) -> Toolbox:
-        env = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT), "PYTHONUNBUFFERED": "1"}
+        # Four servers start at once; each numpy/torch import would otherwise reserve a full-width OpenBLAS/OpenMP
+        # thread pool, which exhausts memory on an 8-16 GB laptop ("OpenBLAS error: Memory allocation failed").
+        # The servers do I/O and single-image inference, so a small pool costs nothing. An explicit setting wins.
+        threads = {k: os.environ.get(k, "2") for k in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")}
+        env = {**os.environ, **threads, "PYTHONPATH": str(PROJECT_ROOT), "PYTHONUNBUFFERED": "1"}
         for name, module in self.servers.items():
             params = StdioServerParameters(command=sys.executable, args=["-m", module], cwd=str(PROJECT_ROOT), env=env)
             read, write = await self._stack.enter_async_context(stdio_client(params))

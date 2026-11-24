@@ -18,15 +18,31 @@ def _status(event_id: str) -> str:
         return conn.execute("SELECT status FROM events WHERE id = ?", (event_id,)).fetchone()["status"]
 
 
+async def check_event(toolbox: Toolbox, event_id: str) -> dict | None:
+    """verify → (re-check), each tried twice. None when the verifier stays unavailable: a tool failure (out of
+    memory, missing weights) is not evidence, so it must never turn real damage into a "false alarm"."""
+    async def call(tool: str) -> dict | None:
+        for _ in range(2):
+            out = await use(toolbox, "vision", tool, {"event_id": event_id})
+            if not out.get("error") and out.get("suggested_verdict"):
+                return out
+        _audit("verifier_unavailable", f"event:{event_id}", {"tool": tool, "error": out.get("error")})
+        return None
+
+    check = await call("detector_verify")
+    if check and check["suggested_verdict"] == "recheck":
+        check = await call("detector_recheck")
+        return {**check, "rechecked": True} if check else None
+    return {**check, "rechecked": False} if check else None
+
+
 async def decide_event(toolbox: Toolbox, event_id: str) -> str:
     """verify → (re-check) → verdict by the rule in core.reports.suggested_verdict. Returns the final status."""
-    v = await use(toolbox, "vision", "detector_verify", {"event_id": event_id})
-    verdict, reason = v.get("suggested_verdict"), v.get("reason", "")
-    if verdict == "recheck":
-        r = await use(toolbox, "vision", "detector_recheck", {"event_id": event_id})
-        verdict, reason = r.get("suggested_verdict", "rejected"), r.get("reason", "")
-    await use(toolbox, "vision", "detector_record_verdict", {"event_id": event_id, "verdict": verdict or "rejected",
-                                                   "rationale": f"rule: {reason}"})
+    check = await check_event(toolbox, event_id)
+    if check is None:
+        return _status(event_id)  # stays received/checked; "Process now" retries it
+    await use(toolbox, "vision", "detector_record_verdict", {"event_id": event_id, "verdict": check["suggested_verdict"],
+                                                   "rationale": f"rule: {check.get('reason', '')}"})
     return _status(event_id)
 
 
