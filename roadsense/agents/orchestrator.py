@@ -109,12 +109,11 @@ async def _vision(toolbox: Toolbox, judge: Judge, events: list[dict]) -> list[di
     """Verify every event and record a verdict. Returns the events that are real damage (confirmed or disputed)."""
     suggested, borderline = {}, []
     for e in events:
-        check = await use(toolbox, "vision", "detector_verify", {"event_id": e["id"]})
-        verdict, reason, rechecked = check.get("suggested_verdict"), check.get("reason", ""), False
-        if verdict == "recheck":
-            check = await use(toolbox, "vision", "detector_recheck", {"event_id": e["id"]})
-            verdict, reason, rechecked = check.get("suggested_verdict", "rejected"), check.get("reason", ""), True
-        suggested[e["id"]] = (verdict or "rejected", reason)
+        check = await fallback.check_event(toolbox, e["id"])
+        if check is None:  # verifier unavailable: no verdict, the event waits for the safety net or "Process now"
+            continue
+        verdict, reason, rechecked = check["suggested_verdict"], check.get("reason", ""), check["rechecked"]
+        suggested[e["id"]] = (verdict, reason)
         if verdict == "confirmed" and _borderline(e, check, rechecked):
             borderline.append({"event_id": e["id"], "edge_class": e["class_code"], "edge_confidence": e["confidence"],
                                "frames_seen": e["frames_seen"], "box_area_ratio": e["box_area_ratio"],
@@ -126,6 +125,8 @@ async def _vision(toolbox: Toolbox, judge: Judge, events: list[dict]) -> list[di
                                 "Judged borderline detections") if borderline else {}
     real = []
     for e in events:
+        if e["id"] not in suggested:
+            continue
         verdict, reason = suggested[e["id"]]
         rationale = f"rule: {reason}"
         a = judged.get(e["id"])

@@ -77,12 +77,15 @@ def main():
         print(f"\n=== {r['trip_id']}: mode {r['mode']}, fallback rate {r.get('fallback_rate')}, "
               f"{r.get('seconds')} s, llm {r.get('llm')}")
         print(r["summary"])
+    replay_ok = all(r["mode"] == "agents" and r.get("fallback_rate") == 0 for r in results)
     if args.record:
         with session() as conn:
             rows = [dict(x) for x in conn.execute("SELECT key, model, message, usage FROM llm_cache")]
+        if not rows or not replay_ok:  # a failed run (no key, verifier out of memory) must not erase a good recording
+            raise SystemExit(f"\nnot saved: the live run was incomplete ({len(rows)} responses, rule engine had to "
+                             f"step in); {CACHE.relative_to(ROOT)} is unchanged")
         CACHE.write_text(json.dumps(rows, indent=1), encoding="utf-8")
         print(f"\nsaved {len(rows)} recorded responses to {CACHE.relative_to(ROOT)}")
-    replay_ok = all(r["mode"] == "agents" and r.get("fallback_rate") == 0 for r in results)
     if not args.record and not args.no_llm:
         print("\nreplay:", "complete (every agent step served from the recording)" if replay_ok else
               "INCOMPLETE: some steps were not in the recording and fell back to the rule engine")

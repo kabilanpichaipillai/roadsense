@@ -5,8 +5,9 @@
 Cognizant BrAInstorm Challenge 2026 · Agentic AI for Good · tracks: Public Services, Sustainability
 
 Halifax logged 3,203 pothole reports between January 1 and March 19, 2026, and says the count includes the same
-pothole reported several times and potholes on provincial roads it does not maintain (CityNews, via an aggregator;
-to be checked against the original). RoadSense attacks exactly that: a dashcam finds the damage, and a team of AI
+pothole reported several times and potholes on provincial roads it does not maintain
+([CTV Atlantic](https://www.ctvnews.ca/atlantic/nova-scotia/article/more-potholes-in-halifax-this-year-compared-to-2024-municipality-says/)).
+RoadSense attacks exactly that: a dashcam finds the damage, and a team of AI
 agents confirms it, works out **who** is responsible, merges repeat sightings into one report, and files it once the
 driver approves.
 
@@ -190,7 +191,7 @@ research synthesis in [docs/research-synthesis.md](docs/research-synthesis.md):
 
 | Page | What it is for |
 |---|---|
-| **Overview** | The review queue and reports by status, the pipeline as a road (detections → confirmed → unique reports → sent, with duplicates merged and false alarms dropped between stops), signals worth a look, a map, grouped agent decisions and recent trips |
+| **Overview** | The review queue and reports by status, the pipeline as a road (detections → confirmed → unique reports → sent, with duplicates merged and false alarms dropped between stops), what the pipeline saved the city (duplicate 311 contacts avoided, reports sent straight to the province, staff time and intake cost at configurable rates), signals worth a look, a map, grouped agent decisions and recent trips |
 | **Trips** | Upload a dashcam video (+ GPX/CSV, or a simulated Halifax route); live progress through edge → upload → agents; detections gallery; "Process now" for uploaded-but-unprocessed trips |
 | **Review** | The approval inbox: photo, flags (class disputed, N drivers), the agents' decision timeline, and the exact payload locked by SHA-256. Sending always needs a click |
 | **Reports** | All reports with status filters and a detail page |
@@ -222,12 +223,15 @@ INCOMPLETE after an upgrade, re-record with `--record`. Browse the result with `
 ## Evidence
 
 ```bash
-python scripts/check.py                                   # ruff + 65 tests + pip-audit (no known vulnerabilities)
+python scripts/check.py                                   # ruff + 73 tests + pip-audit (no known vulnerabilities)
 python scripts/eval_verifier.py --split <RDD>/val --tune  # choose the verification rule on validation data
 python scripts/eval_verifier.py --split <RDD>/test        # report it once on test
 python scripts/eval_agents.py [--llm]                     # 42 decision scenarios end to end
 python scripts/smoke_llm.py                               # does each free model really call tools?
 ```
+
+Business case (costs, savings, pilot proposal): [docs/business-case.md](docs/business-case.md). Finale pitch kit
+(run sheet, demo path, pre-flight checklist, likely questions): [docs/pitch.md](docs/pitch.md).
 
 Security and privacy: see [SECURITY.md](SECURITY.md) (threat model, OWASP Agentic Top 10 mapping, PIPEDA/PIIDPA notes).
 

@@ -30,7 +30,7 @@ from ..common.db import REPORT_STATUSES, audit, now, row, session
 from ..common.metrics import install as install_metrics
 from ..common.metrics import metrics
 from ..common.schemas import DamageEvent
-from ..core import condition, external, geo, media, open311, privacy, reports
+from ..core import condition, external, geo, impact, media, open311, privacy, reports
 from .jobs import Worker
 
 log = logging.getLogger("roadsense.api")
@@ -227,7 +227,7 @@ def stats():
             "SELECT detail FROM audit WHERE action = 'trip_done' ORDER BY id")]
         linked = one("SELECT COUNT(*) FROM events WHERE report_id IS NOT NULL AND suppressed_by IS NULL")
         n_reports = one("SELECT COUNT(*) FROM reports")
-        return {
+        out = {
             "detections": sum(events.values()), "events": events, "reports": reports_by, "authorities": authorities,
             "false_alarms_removed": events.get("rejected", 0),
             "duplicates_merged": max(linked - n_reports, 0),
@@ -245,6 +245,8 @@ def stats():
             "fallback_rate": round(sum(t.get("fallback_events", 0) for t in trips) /
                                    max(sum(sum((t.get("events") or {}).values()) for t in trips), 1), 3),
         }
+    out["impact"] = impact.estimate(out, settings.cost_per_contact, settings.minutes_per_contact)
+    return out
 
 
 @app.get("/trips", dependencies=AUTH)
