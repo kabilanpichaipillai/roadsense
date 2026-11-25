@@ -31,10 +31,14 @@ class DeliveryError(RuntimeError):
     """Delivery failed; the report stays approved and the scheduler retries with backoff."""
 
 
+class Undeliverable(DeliveryError):
+    """Retrying cannot help (no channel, nobody to send it to): the report fails at once and a person takes over."""
+
+
 def _info(authority: str | None) -> dict:
     info = open311.service_info(authority)
     if info is None:
-        raise DeliveryError(f"no delivery channel for {authority!r}")
+        raise Undeliverable(f"no delivery channel for {authority!r}")
     return info
 
 
@@ -195,7 +199,10 @@ def _referral_submit(payload: dict, info: dict, report: dict | None) -> dict:
         except (OSError, smtplib.SMTPException) as e:
             raise DeliveryError(f"referral email failed: {e}") from e
         emailed = True
-    how = f"emailed to {info['referral_email']}" if emailed else "prepared (send it to " + str(info.get("contact")) + ")"
+    if not emailed and not info.get("contact"):
+        raise Undeliverable(f"referral package {ref_id} saved for {info['authority']}, but there is no contact on "
+                            "file: forward manually")
+    how = f"emailed to {info['referral_email']}" if emailed else f"prepared (send it to {info['contact']})"
     return {"channel": "referral", "service_request_id": ref_id,
             "notice": f"Referral package {how} for {info['authority']}."}
 
