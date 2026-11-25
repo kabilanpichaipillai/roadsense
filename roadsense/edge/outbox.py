@@ -23,8 +23,10 @@ def upload(trip_dir: Path, api_url: str | None = None, token: str | None = None,
         for meta in pending(trip_dir):
             image = meta.with_suffix(".jpg")
             try:
+                # repair-verification frames (edge.reobserve) go to /passes, damage events to /events
+                path, field = ("/passes", "road_pass") if meta.name.startswith("pass-") else ("/events", "event")
                 with open(image, "rb") as f:
-                    r = client.post("/events", data={"event": meta.read_text(encoding="utf-8")},
+                    r = client.post(path, data={field: meta.read_text(encoding="utf-8")},
                                     files={"image": (image.name, f, "image/jpeg")})
                 r.raise_for_status()
             except httpx.HTTPError as e:

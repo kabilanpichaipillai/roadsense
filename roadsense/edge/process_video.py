@@ -26,6 +26,7 @@ from .camera import Camera, offset_position, uncertainty_m
 from .gps import GpsTrack
 from .outbox import upload
 from .redact import redact
+from .reobserve import PassCollector
 from .tracker import TrackAggregator, TrackState
 
 NAME_BY_CODE = {code: name for code, name, _ in CLASSES.values()}
@@ -58,8 +59,9 @@ def _event(state: TrackState, trip_id: str, gps: GpsTrack, camera: Camera) -> Da
 def process_video(video: str | Path, gps_path: str | Path, trip_id: str | None = None, outbox: Path | None = None,
                   sample_fps: float = 5.0, gps_offset_s: float = 0.0, detector: Detector | None = None,
                   min_frames: int = 3, roi_top: float = 0.0, camera: Camera | None = None,
-                  progress: Callable[[float, str], None] | None = None) -> dict:
-    """roi_top: fraction of the frame height (sky) dropped before detection; boxes are mapped back to the full frame."""
+                  progress: Callable[[float, str], None] | None = None, watch: list[dict] | None = None) -> dict:
+    """roi_top: fraction of the frame height (sky) dropped before detection; boxes are mapped back to the full frame.
+    watch: closed reports to re-observe (agent API /verification/watchlist); one frame is kept per spot passed."""
     trip_id = trip_id or time.strftime("trip%Y%m%d-%H%M%S")
     outbox = (outbox or default_outbox()) / trip_id
     outbox.mkdir(parents=True, exist_ok=True)
@@ -67,6 +69,7 @@ def process_video(video: str | Path, gps_path: str | Path, trip_id: str | None =
     detector = detector or Detector(settings.weights_dir / settings.edge_weights, settings.device)
     detector.reset_tracker()
     camera = camera or Camera()
+    passes = PassCollector(watch, camera) if watch else None
 
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
@@ -102,11 +105,14 @@ def process_video(video: str | Path, gps_path: str | Path, trip_id: str | None =
                 d["box"] = [d["box"][0], d["box"][1] + top, d["box"][2], d["box"][3] + top]
             processed += 1
             emit(aggregator.update(frame_idx / video_fps, frame, detections))
+            if passes:
+                passes.update(frame, *gps.at(frame_idx / video_fps))
             if progress and total:
                 progress(frame_idx / total, f"{processed} frames analysed, {len(events)} defects found")
         frame_idx += 1
     cap.release()
     emit(aggregator.flush())
+    kept = passes.flush(trip_id, outbox) if passes else []
 
     elapsed = time.perf_counter() - started
     stats = {"trip_id": trip_id, "outbox": str(outbox), "events": len(events),
@@ -115,7 +121,7 @@ def process_video(video: str | Path, gps_path: str | Path, trip_id: str | None =
              "detector": detector.label, "tracker": "BoT-SORT (sparse optical flow motion compensation)",
              "detector_fps": round(processed / infer_s, 1) if infer_s else None,
              "pipeline_fps": round(processed / elapsed, 1) if elapsed else None,
-             "projected": sum(e.distance_m is not None for e in events)}
+             "projected": sum(e.distance_m is not None for e in events), "passes": len(kept)}
     (outbox / "trip.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
     return stats
 
