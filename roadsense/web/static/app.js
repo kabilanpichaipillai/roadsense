@@ -65,6 +65,7 @@ const ICONS = {
   map: '<path d="M1 6v16l7-4 8 4 7-4V2l-7 4-8-4-7 4z"/><path d="M8 2v16M16 6v16"/>', activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   moon: '<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>',
   cloud: '<path d="M18 10h-1.3A8 8 0 109 20h9a5 5 0 000-10z"/>',
+  risk: '<path d="M20 17.6A5 5 0 0018 8h-1.3A8 8 0 104 16.3"/><path d="M8 16l2 3M12 15l2 3M16 16l1.5 2.5"/>',
   zoom: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/>',
   keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
 };
@@ -187,7 +188,6 @@ const ROUTES = {
   reports: ["Reports", "Every defect, merged across drivers", renderReports],
   map: ["Map", "Reports on the road network", renderMap],
   conditions: ["Road condition", "Segment-level condition estimate from open defects (not a certified survey)", renderConditions],
-  forecast: ["Pothole Risk Forecast", "Where cracks may turn into potholes after freeze-thaw (heuristic, not validated)", renderForecast],
   activity: ["Agent activity", "Every plan, decision and tool call, from the append-only audit log", renderActivity],
   standards: ["Service standards", "Filed reports against each authority's published service standard, with a tamper-evident history", renderStandards],
   authorities: ["Authorities", "Requests delivered to Halifax 311 and Nova Scotia Public Works", renderAuthorities],
@@ -197,6 +197,9 @@ const ROUTES = {
 
 async function router() {
   const [path, qs] = location.hash.replace(/^#\/?/, "").split("?");
+  if (riskModal.dlg?.open) riskModal.dlg.close();
+  // Pothole Risk is a workspace over the Map, not a page: old #/forecast links land on the Map with it open
+  if (path === "forecast") { riskModal.pending = qs || ""; location.replace("#/map"); return; }
   const route = ROUTES[path] && (path !== "users" || can("admin")) ? path : "overview";
   const params = new URLSearchParams(qs || "");
   maps.forEach((m) => m.remove()); maps = [];
@@ -211,14 +214,16 @@ async function router() {
   document.body.classList.add("loading");
   current = document.createElement("div");
   current.className = "ns-stagger";
-  current.innerHTML = `<div class="card card-body sk-page" aria-busy="true" aria-label="Loading"><div class="skeleton" style="width:22%;height:22px"></div><div class="skeleton" style="width:58%;margin-top:16px"></div><div class="skeleton" style="width:46%;margin-top:10px"></div></div>
-    <div class="card card-body section"><div class="skeleton" style="width:30%"></div><div class="skeleton" style="width:80%;margin-top:14px"></div><div class="skeleton" style="width:72%;margin-top:10px"></div><div class="skeleton" style="width:64%;margin-top:10px"></div></div>`;
+  current.innerHTML = SKELETON;
   main.replaceChildren(current);
   const mine = current;
   try { await render(params); } catch (e) { mine.innerHTML = errorState(e); }
   if (mine === current) { document.body.classList.remove("loading"); animateView(mine); }
+  if (route === "map" && mine === current && riskModal.pending != null) { const q = riskModal.pending; riskModal.pending = null; openRiskModal(q); }
   refreshChrome();
 }
+const SKELETON = `<div class="card card-body sk-page" aria-busy="true" aria-label="Loading"><div class="skeleton" style="width:22%;height:22px"></div><div class="skeleton" style="width:58%;margin-top:16px"></div><div class="skeleton" style="width:46%;margin-top:10px"></div></div>
+    <div class="card card-body section"><div class="skeleton" style="width:30%"></div><div class="skeleton" style="width:80%;margin-top:14px"></div><div class="skeleton" style="width:72%;margin-top:10px"></div><div class="skeleton" style="width:64%;margin-top:10px"></div></div>`;
 
 /* ---------- motion: numbers count up, cards get a pointer spotlight, the evidence photo gets a scan line ---------- */
 const STILL = matchMedia("(prefers-reduced-motion: reduce)");
@@ -500,9 +505,12 @@ async function renderMap(params) {
   view.innerHTML = `
     <div class="toolbar">
       <div class="tabs" role="group" aria-label="Show reports by status">${["all", "pending_approval", "submitted", "fixed"].map((s) => `<button type="button" aria-pressed="${s === filter}" class="${s === filter ? "on" : ""}" data-s="${s}">${s === "all" ? "All" : STATUS[s][0]}<span class="n">${count(s)}</span></button>`).join("")}</div>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="open-risk" aria-haspopup="dialog" aria-controls="risk-modal">${icon("risk")}Pothole Risk</button>
     </div>
     <div class="card"><div class="card-head"><div class="legend">${Object.entries(MAP_COLORS).map(([k, c]) => `<span><i style="background:${c}"></i>${STATUS[k][0]}</span>`).join("")}</div><span class="spacer"></span><span class="desc">Marker size = number of drivers</span></div><div id="big-map" class="map"></div></div>`;
   $$(".tabs button").forEach((b) => b.onclick = () => location.hash = `#/map?status=${b.dataset.s}`);
+  $("#open-risk", view).onclick = () => openRiskModal();
   drawMap("big-map", list);
 }
 
@@ -1349,8 +1357,7 @@ const ftText = (f) => {
 };
 const whereText = (s) => s.municipality || (s.location && !s.location.startsWith("near ") ? s.location : "") || "Location unknown";
 
-function drawRiskMap(id, segs) {
-  const el = document.getElementById(id);
+function drawRiskMap(el, segs) {
   if (!el || !window.L) return;
   const center = segs.length ? [segs[0].lat, segs[0].lon] : [44.6425, -63.578];
   const m = L.map(el, { scrollWheelZoom: true }).setView(center, 14);
@@ -1369,15 +1376,16 @@ function drawRiskMap(id, segs) {
   }
   const pts = segs.map((s) => [s.lat, s.lon]);
   if (pts.length > 1) m.fitBounds(pts, { padding: [30, 30], maxZoom: 16 });
-  maps.push(m);
+  riskModal.maps.push(m);
   setTimeout(() => m.invalidateSize(), 50);
 }
 
 async function renderForecast(params) {
-  const view = stage();
+  const view = riskModal.view;
   const seg = params.get("segment");
   if (seg) return renderForecastSegment(seg);
   const [f, ev, hist] = await Promise.all([api("/api/forecast"), api("/api/forecast/evaluation").catch(() => null), api("/api/forecast/history").catch(() => null)]);
+  if (view !== riskModal.view) return;
   const cat = params.get("risk") || "all", place = params.get("where") || "";
   const all = f.segments || [];
   const places = [...new Set(all.map(whereText))].sort();
@@ -1418,11 +1426,11 @@ async function renderForecast(params) {
       ${forecastEvaluationCard(ev)}
       ${forecastHistoryCard(hist)}
     </div>`;
-  $$(".tabs button", view).forEach((b) => b.onclick = () => location.hash = `#/forecast?risk=${b.dataset.c}${place ? `&where=${encodeURIComponent(place)}` : ""}`);
-  $("#fc-where", view).onchange = (e) => location.hash = `#/forecast?risk=${cat}${e.target.value ? `&where=${encodeURIComponent(e.target.value)}` : ""}`;
-  $$("tr[data-seg]", view).forEach((tr) => { const go = () => location.hash = `#/forecast?segment=${encodeURIComponent(tr.dataset.seg)}`; tr.onclick = go; tr.onkeydown = (e) => { if (e.key === "Enter") go(); }; });
+  $$(".tabs button", view).forEach((b) => b.onclick = () => riskGo(`risk=${b.dataset.c}${place ? `&where=${encodeURIComponent(place)}` : ""}`));
+  $("#fc-where", view).onchange = (e) => riskGo(`risk=${cat}${e.target.value ? `&where=${encodeURIComponent(e.target.value)}` : ""}`);
+  $$("tr[data-seg]", view).forEach((tr) => { const go = () => riskGo(`segment=${encodeURIComponent(tr.dataset.seg)}`); tr.onclick = go; tr.onkeydown = (e) => { if (e.key === "Enter") go(); }; });
   bindForecastRun();
-  drawRiskMap("risk-map", list);
+  drawRiskMap($("#risk-map", view), list);
 }
 
 function forecastEvaluationCard(ev) {
@@ -1449,7 +1457,7 @@ function forecastHistoryCard(h) {
 }
 
 function bindForecastRun() {
-  const b = $("#fc-run");
+  const b = $("#fc-run", riskModal.view);
   if (!b) return;
   b.onclick = async () => {
     b.disabled = true; b.innerHTML = `${icon("refresh", "spin")}Running…`;
@@ -1457,16 +1465,17 @@ function bindForecastRun() {
       const job = await api("/api/forecast/run?force=true", { method: "POST" });
       if (job.status === "failed") throw new Error(job.error || "forecast failed");
       toast(job.status === "done" ? `Forecast updated: ${job.result?.segments ?? 0} segment(s)` : "Forecast queued");
-      router();
+      riskGo(riskModal.qs);
     } catch (e) { toast(e.message, false); b.disabled = false; b.innerHTML = `${icon("refresh")}Run forecast now`; }
   };
 }
 
 async function renderForecastSegment(id) {
-  const view = stage();
+  const view = riskModal.view;
   const d = await api(`/api/forecast/segments/${encodeURIComponent(id)}`);
+  if (view !== riskModal.view) return;
   const s = d.segment, p = d.prediction, det = d.deterioration;
-  $("#crumb-current").textContent = `Pothole risk / ${s.road_name}`;
+  $("#risk-modal-h").textContent = `Pothole risk / ${s.road_name}`;
   const back = `<a href="#/forecast" class="btn btn-ghost btn-sm" style="margin-left:-10px">${icon("arrow", "flip")}All segments</a>`;
   const factorRow = (f) => `<tr><td><b>${esc(f.label)}</b><div class="muted small">${esc(Object.entries(f.raw || {}).filter(([k, v]) => v !== null && typeof v !== "object" && k !== "start" && k !== "end").map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(" · "))}</div></td>
     <td class="mono">${f.available ? f.value.toFixed(2) : `<span class="muted">no data</span>`}</td><td class="mono">${pct(f.weight)}</td><td class="mono">${f.contribution.toFixed(3)}</td><td class="mono">${pct(f.coverage)}</td></tr>`;
@@ -1502,6 +1511,81 @@ async function renderForecastSegment(id) {
     </div>
     ${(d.history || []).length ? `<div class="card section"><div class="card-head"><h2>Earlier predictions and outcomes</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>Predicted</th><th>Kind</th><th>Category</th><th>Score</th><th>Period</th><th>Outcome</th></tr></thead><tbody>
       ${d.history.map((h) => `<tr><td class="small">${esc(new Date(h.predicted_at).toLocaleString())}</td><td>${esc(h.run_kind)}</td><td>${riskPill(h.category)}</td><td class="mono">${h.score.toFixed(2)}</td><td class="small">${esc(h.period_start)} → ${esc(h.period_end)}</td><td>${esc((h.outcome || "pending").replace(/_/g, " "))}</td></tr>`).join("")}</tbody></table></div></div>` : ""}`;
+}
+
+/* ---------- Pothole Risk workspace: a modal over the Map, never a page of its own ----------
+   The forecast renders into the modal and moves within it (filters, segment detail) without touching the URL, so the Map
+   underneath stays mounted. The native <dialog> makes the page behind inert, traps focus and closes on Esc. */
+const RISK_PAGE = ["Pothole Risk Forecast", "Where cracks may turn into potholes after freeze-thaw (heuristic, not validated)"];
+const riskModal = { dlg: null, view: null, maps: [], qs: "", pending: null, opener: null, pressOnBackdrop: false };
+
+function riskDialog() {
+  if (riskModal.dlg) return riskModal.dlg;
+  const dlg = document.createElement("dialog");
+  dlg.id = "risk-modal";
+  dlg.className = "risk-modal";
+  dlg.setAttribute("aria-labelledby", "risk-modal-h");
+  dlg.setAttribute("aria-describedby", "risk-modal-sub");
+  dlg.innerHTML = `<div class="risk-modal-panel">
+      <header class="risk-modal-head"><div class="risk-modal-title"><h2 id="risk-modal-h"></h2><p class="sub" id="risk-modal-sub"></p></div>
+        <span class="muted small hide-sm"><span class="kbd">Esc</span> close</span>
+        <button type="button" class="btn btn-ghost icon-btn risk-modal-x" aria-label="Close pothole risk">${icon("x")}</button></header>
+      <div class="risk-modal-body" id="risk-modal-body"></div>
+    </div>`;
+  document.body.append(dlg);
+  $(".risk-modal-x", dlg).onclick = () => dlg.close();
+  // Only a press that starts and ends on the backdrop closes it: selecting text and releasing outside must not
+  dlg.addEventListener("pointerdown", (e) => { riskModal.pressOnBackdrop = e.target === dlg; });
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) { if (riskModal.pressOnBackdrop) dlg.close(); return; }
+    // Forecast links (map popups, "All segments") move within the modal instead of changing the page
+    const a = e.target.closest?.('a[href^="#/forecast"]');
+    if (a) { e.preventDefault(); riskGo(a.getAttribute("href").split("?")[1] || ""); }
+  });
+  dlg.addEventListener("close", () => {
+    riskModal.maps.forEach((m) => m.remove()); riskModal.maps = [];
+    riskModal.view = null;
+    $("#risk-modal-body", dlg).replaceChildren();
+    document.documentElement.classList.remove("risk-modal-open");
+    document.body.append($("#toast"));
+    if (riskModal.opener?.isConnected) riskModal.opener.focus();
+  });
+  return (riskModal.dlg = dlg);
+}
+
+function openRiskModal(qs = "") {
+  const dlg = riskDialog();
+  if (!dlg.open) {
+    riskModal.opener = document.activeElement;
+    document.documentElement.classList.add("risk-modal-open");
+    dlg.append($("#toast")); // toasts from the forecast (Run now) stay above the backdrop
+    dlg.showModal();
+    $(".risk-modal-x", dlg).focus();
+  }
+  riskGo(qs);
+}
+
+async function riskGo(qs) {
+  const dlg = riskModal.dlg;
+  if (!dlg?.open) return;
+  riskModal.qs = qs;
+  riskModal.maps.forEach((m) => m.remove()); riskModal.maps = [];
+  $("#risk-modal-h", dlg).textContent = RISK_PAGE[0];
+  $("#risk-modal-sub", dlg).textContent = RISK_PAGE[1];
+  const view = document.createElement("div");
+  view.className = "ns-stagger";
+  view.innerHTML = SKELETON;
+  riskModal.view = view;
+  const body = $("#risk-modal-body", dlg);
+  body.replaceChildren(view);
+  body.scrollTop = 0;
+  try { await renderForecast(new URLSearchParams(qs)); } catch (e) {
+    if (view !== riskModal.view) return;
+    view.innerHTML = errorState(e);
+    const retry = $(".empty .btn", view);
+    if (retry) retry.onclick = () => riskGo(qs); // the page-level Retry would re-render the Map and close this
+  }
+  if (view === riskModal.view) animateView(view);
 }
 
 /* ---------- Users (admin) ---------- */
@@ -1675,11 +1759,12 @@ const palette = {
   el: $("#palette"), q: $("#palette-q"), list: $("#palette-list"), pending: [], items: [], sel: 0, opener: null,
   commands() {
     const nav = [["overview", "grid"], ["trips", "video"], ["review", "inbox"], ["reports", "file"], ["map", "map"],
-      ["conditions", "activity"], ["forecast", "alert"], ["activity", "activity"], ["standards", "clock"], ["authorities", "building"], ["system", "shield"],
+      ["conditions", "activity"], ["activity", "activity"], ["standards", "clock"], ["authorities", "building"], ["system", "shield"],
       ...(can("admin") ? [["users", "user"]] : [])]
       .map(([r, ic]) => ({ group: "Go to", label: ROUTES[r][0], hint: ROUTES[r][1], icon: ic, run: () => (location.hash = `#/${r}`) }));
     const acts = [
       { group: "Actions", label: "New trip", hint: "Upload a dashcam video", icon: "plus", run: () => { location.hash = "#/trips"; setTimeout(() => $("#video")?.click(), 300); } },
+      { group: "Actions", label: "Pothole risk", hint: "Opens over the Map", icon: "risk", run: () => (location.hash = "#/forecast") },
       { group: "Actions", label: "Toggle theme", hint: "Light / dark", icon: "moon", run: toggleTheme },
       ...(session.authEnabled && session.user ? [{ group: "Actions", label: "Sign out", hint: session.user.email, icon: "lock", run: signOut }] : []),
       { group: "Actions", label: "Keyboard shortcuts", hint: "?", icon: "keyboard", run: openShortcuts },
