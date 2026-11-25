@@ -1,11 +1,14 @@
 # RoadSense demo on one VM: the app container behind Caddy, which gets a free Let's Encrypt certificate for
 # SITE_HOST (an <ip>.sslip.io name by default). Written to /opt/roadsense by scripts/deploy_gcp.py with a .env beside it.
-# Public: the web app, and GET /media/* of the agent API (signed evidence links a road authority opens).
+# Public: the web app, and GET /media/* of the agent API (signed evidence links a road authority opens), and the
+# mock 311 inbox at 311.SITE_HOST (no sign-in: anyone with the link can mark a request repaired).
 services:
   roadsense:
     build: .
     env_file: .env
-    expose: ["7860", "8000"]
+    environment:
+      ROADSENSE_OPEN311_INBOX_URL: https://311.${SITE_HOST}
+    expose: ["7860", "8000", "8311"]
     volumes:
       - roadsense-data:/app/data
     restart: unless-stopped
