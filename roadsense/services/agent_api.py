@@ -30,7 +30,7 @@ from ..common.db import REPORT_STATUSES, audit, now, row, session
 from ..common.metrics import install as install_metrics
 from ..common.metrics import metrics
 from ..common.schemas import DamageEvent, RoadPass
-from ..core import condition, external, geo, impact, media, open311, privacy, repair, reports
+from ..core import condition, equity, exposure, external, geo, impact, media, open311, privacy, repair, reports
 from .jobs import Worker
 
 log = logging.getLogger("roadsense.api")
@@ -323,11 +323,13 @@ def report_detail(report_id: int):
                    for x in conn.execute("SELECT * FROM external_requests WHERE report_id = ?", (report_id,))]
         trend = condition.deterioration(conn, report_id)
         verification = repair.summary(conn, r)
+        risk = exposure.detail(conn, report_id)
     r.pop("approved_payload", None)
     r["lifecycle"] = repair.lifecycle(r)
     p = open311.build_payload(r)
     return {"report": r, "events": events, "trail": trail, "payload": p, "payload_hash": open311.payload_hash(p),
-            "deliveries": deliveries, "external": matches, "deterioration": trend, "verification": verification}
+            "deliveries": deliveries, "external": matches, "deterioration": trend, "verification": verification,
+            "risk": risk}
 
 
 @app.get("/trips/{trip_id}/reports", dependencies=AUTH)
@@ -454,6 +456,65 @@ def conditions():
 def deterioration(report_id: int):
     with session() as conn:
         return condition.deterioration(conn, report_id)
+
+
+# ---------- exposure-weighted risk and repair equity ----------
+@app.get("/risk", dependencies=AUTH)
+def risk_listing(category: str | None = None, damage: str | None = None, neighbourhood: str | None = None,
+                 road_class: str | None = None, infrastructure: str | None = None):
+    """Reports by exposure-weighted risk: physical severity, exposure (a proxy) and overall, with filters."""
+    if category and category not in exposure.CATEGORIES:
+        raise HTTPException(400, f"category must be one of {', '.join(exposure.CATEGORIES)}")
+    if infrastructure and infrastructure not in exposure.FEATURE_LABELS:
+        raise HTTPException(400, f"infrastructure must be one of {', '.join(exposure.FEATURE_LABELS)}")
+    with session() as conn:
+        return exposure.listing(conn, category, damage, neighbourhood, road_class, infrastructure)
+
+
+@app.get("/reports/{report_id}/risk", dependencies=AUTH)
+def report_risk(report_id: int):
+    with session() as conn:
+        d = exposure.detail(conn, report_id)
+    if d is None:
+        raise HTTPException(404, "no risk score for this report yet")
+    return d
+
+
+@app.post("/risk/run", dependencies=AUTH)
+async def risk_run(wait: bool = True, who: Actor = Depends(actor)):
+    """Score new or changed reports now (the scheduler does this on its own)."""
+    who.need(REVIEW_ROLES)
+    job_id = worker.submit("score_exposure", actor=who.name)
+    return await worker.wait(job_id, 120) if wait else {"job_id": job_id, "status": "queued"}
+
+
+def _equity_filters(start: str | None, end: str | None, category, road_class, authority, neighbourhood, source):
+    from datetime import date
+
+    try:
+        return {"start": date.fromisoformat(start) if start else None, "end": date.fromisoformat(end) if end else None,
+                "category": category, "road_class": road_class, "authority": authority,
+                "neighbourhood": neighbourhood, "source": source if source in ("city_sr", "roadsense") else None}
+    except ValueError as e:
+        raise HTTPException(400, "dates must be YYYY-MM-DD") from e
+
+
+@app.get("/equity", dependencies=AUTH)
+def equity_summary(start: str | None = None, end: str | None = None, category: str | None = None,
+                   road_class: str | None = None, authority: str | None = None, neighbourhood: str | None = None,
+                   source: str | None = None):
+    """Repair Equity Audit: repair times by neighbourhood, aggregated. Flags are possible differences, not findings."""
+    with session() as conn:
+        return equity.summary(conn, **_equity_filters(start, end, category, road_class, authority, neighbourhood,
+                                                      source))
+
+
+@app.get("/equity/records", dependencies=AUTH)
+def equity_records(neighbourhood: str, start: str | None = None, end: str | None = None, category: str | None = None,
+                   road_class: str | None = None, authority: str | None = None, source: str | None = None):
+    f = _equity_filters(start, end, category, road_class, authority, None, source)
+    with session() as conn:
+        return equity.neighbourhood_records(conn, neighbourhood, **{k: v for k, v in f.items() if k != "neighbourhood"})
 
 
 # ---------- city requests and third-party feeds ----------

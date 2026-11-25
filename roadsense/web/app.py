@@ -166,6 +166,21 @@ def conditions():
     return agent("GET", "/conditions")
 
 
+@app.get("/api/risk")
+def risk(request: Request):
+    return agent("GET", "/risk", params=dict(request.query_params))
+
+
+@app.get("/api/equity")
+def equity(request: Request):
+    return agent("GET", "/equity", params=dict(request.query_params))
+
+
+@app.get("/api/equity/records")
+def equity_records(request: Request):
+    return agent("GET", "/equity/records", params=dict(request.query_params))
+
+
 @app.get("/api/external")
 def external(source: str | None = None):
     return agent("GET", "/external", params={"source": source} if source else None)
@@ -240,6 +255,11 @@ def process(trip_id: str, request: Request):
 @app.post("/api/follow-up")
 def follow_up(request: Request):
     return agent("POST", "/follow-up", need(request, "review"), timeout=300)
+
+
+@app.post("/api/risk/run")
+def risk_run(request: Request):
+    return agent("POST", "/risk/run", need(request, "review"), timeout=180)
 
 
 @app.post("/api/external/sync")
