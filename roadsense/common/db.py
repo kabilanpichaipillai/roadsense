@@ -288,6 +288,50 @@ CREATE TRIGGER IF NOT EXISTS repair_verifications_no_update BEFORE UPDATE ON rep
 BEGIN SELECT RAISE(ABORT, 'verification history is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS repair_verifications_no_delete BEFORE DELETE ON repair_verifications
 BEGIN SELECT RAISE(ABORT, 'verification history is append-only'); END;
+-- ---- exposure-weighted risk (per report) and repair equity ----
+-- OSM features near a report, one row per OSM element (an element is counted once, in one category)
+CREATE TABLE IF NOT EXISTS exposure_features (
+    report_id INTEGER NOT NULL REFERENCES reports (id) ON DELETE CASCADE,
+    osm_type TEXT NOT NULL,
+    osm_id INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    name TEXT,
+    distance_m REAL NOT NULL,
+    relation TEXT NOT NULL,
+    relevance REAL NOT NULL,
+    tags TEXT,
+    PRIMARY KEY (report_id, osm_type, osm_id)
+);
+CREATE INDEX IF NOT EXISTS exposure_features_category ON exposure_features (category, report_id);
+-- the latest risk calculation per report: physical severity, exposure and overall kept as separate values
+CREATE TABLE IF NOT EXISTS report_risk (
+    report_id INTEGER PRIMARY KEY REFERENCES reports (id) ON DELETE CASCADE,
+    physical_score REAL NOT NULL,
+    exposure_score REAL,
+    overall_score REAL NOT NULL,
+    category TEXT NOT NULL,
+    data_quality REAL NOT NULL,
+    factors TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    osm_status TEXT NOT NULL,
+    osm_source TEXT,
+    osm_fetched_at TEXT,
+    neighbourhood TEXT,
+    rules_hash TEXT NOT NULL,
+    inputs_hash TEXT NOT NULL,
+    computed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS report_risk_category ON report_risk (category, overall_score);
+-- which neighbourhood a repair record (a city service request or a RoadSense report) belongs to, and on what evidence
+CREATE TABLE IF NOT EXISTS neighbourhood_assignments (
+    record_kind TEXT NOT NULL,
+    record_id TEXT NOT NULL,
+    neighbourhood TEXT,
+    source TEXT NOT NULL,
+    assigned_at TEXT NOT NULL,
+    PRIMARY KEY (record_kind, record_id)
+);
+CREATE INDEX IF NOT EXISTS neighbourhood_assignments_name ON neighbourhood_assignments (neighbourhood);
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
 BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit

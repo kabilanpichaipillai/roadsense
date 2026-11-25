@@ -12,6 +12,8 @@ The scheduler (one tick a minute) queues the work nobody clicks for:
     purge              the retention policy (hourly)
     forecast_potholes  freeze-thaw pothole risk per road segment, then outcomes of earlier forecasts
                        (every ROADSENSE_FORECAST_MINUTES; skips itself when no detections or weather changed)
+    score_exposure     exposure-weighted risk for new or changed reports, and neighbourhoods for repair records
+                       (every ROADSENSE_EXPOSURE_MINUTES while there is work)
 """
 from __future__ import annotations
 
@@ -26,7 +28,8 @@ from ..common.db import now, session
 from ..common.metrics import metrics
 
 log = logging.getLogger("roadsense.jobs")
-SCHEDULED = ("retry_deliveries", "push_updates", "follow_up", "sync_city", "purge", "forecast_potholes")
+SCHEDULED = ("retry_deliveries", "push_updates", "follow_up", "sync_city", "purge", "forecast_potholes",
+             "score_exposure")
 
 
 def _decode(r) -> dict:
@@ -110,6 +113,11 @@ class Worker:
             if conn.execute("SELECT 1 FROM reports WHERE status = 'submitted' AND pending_update = 1").fetchone():
                 due.append("push_updates")
         periods = {"follow_up": settings.follow_up_minutes * 60, "purge": 3600}
+        from ..core import exposure
+
+        with session() as conn:
+            if settings.exposure_minutes > 0 and exposure.pending(conn, 1):
+                periods["score_exposure"] = settings.exposure_minutes * 60
         if settings.city_sr_layer_url:
             periods["sync_city"] = settings.external_sync_minutes * 60
         if settings.forecast_enabled:
@@ -128,7 +136,7 @@ class Worker:
     # ---- execution ----
     async def execute(self, job: dict):
         from ..agents import orchestrator
-        from ..core import external, forecast, privacy
+        from ..core import equity, exposure, external, forecast, privacy
         from ..mcp_servers import municipality_server
 
         kind, args, use_llm = job["kind"], job["args"] or {}, settings.llm_enabled
@@ -165,6 +173,12 @@ class Worker:
             with session() as conn:
                 result = forecast.run_forecast(conn, force=bool(args.get("force")), actor=job.get("actor") or "scheduler")
                 result["outcomes"] = forecast.evaluate_outcomes(conn)
+                return result
+        if kind == "score_exposure":
+            with session() as conn:
+                result = exposure.run(conn, actor=job.get("actor") or "scheduler")
+                equity.records(conn)  # (re)assign neighbourhoods from evidence already held
+                result["neighbourhoods"] = equity.resolve_missing(conn)
                 return result
         raise ValueError(f"unknown job kind {kind!r}")
 
