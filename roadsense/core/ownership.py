@@ -53,9 +53,17 @@ def municipality_at(lat: float, lon: float) -> dict | None:
 
 
 def _segment(row: dict, lat: float, lon: float) -> dict:
-    lines = (row.get("the_geom") or {}).get("coordinates") or []
-    d = min((_seg_distance_m((lat, lon), (a[1], a[0]), (b[1], b[0]))
-             for line in lines for a, b in zip(line, line[1:])), default=math.inf)
+    """Distance to one NSRN row; inf for a row whose geometry can't be read (it is then out of range and skipped)."""
+    row = row if isinstance(row, dict) else {}
+    geom = row.get("the_geom") if isinstance(row.get("the_geom"), dict) else {}
+    lines = geom.get("coordinates") or []
+    if geom.get("type") == "LineString":
+        lines = [lines]
+    try:
+        d = min((_seg_distance_m((lat, lon), (a[1], a[0]), (b[1], b[0]))
+                 for line in lines for a, b in zip(line, line[1:])), default=math.inf)
+    except (TypeError, IndexError, ValueError):
+        d = math.inf
     return {"owner": row.get("owner"), "owner_desc": row.get("owner_desc"), "street": row.get("street"),
             "distance_m": round(d, 1)}
 

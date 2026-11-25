@@ -138,12 +138,6 @@ def test_municipal_owner_routes_to_municipality_at_point():
     assert len(c) == 1 and c[0]["authority"] == "Town of Bridgewater" and c[0]["confidence"] == "high"
 
 
-def test_municipal_owner_outside_boundaries():
-    c = geo.jurisdiction_candidates(_place(muni=None), _owner("M"))
-    assert c[0]["authority"] is None and c[0]["confidence"] == "medium"
-    assert "outside known boundaries" in c[0]["evidence"]
-
-
 def test_intersection_tie_gives_two_medium_candidates():
     tie = {"owner": "M", "owner_desc": "Municipal", "street": "King St", "distance_m": 6.0}
     c = geo.jurisdiction_candidates(_place(), _owner("TIR", "Highway 3", tie=tie))
@@ -183,10 +177,68 @@ def test_every_ns_municipality_has_a_channel():
         assert info["channel"] == ("open311" if m["name"] == "Halifax Regional Municipality" else "referral")
 
 
-def test_referral_without_contact_says_forward_manually(db):
+def _approved(event_id, authority):
+    import json
+
+    from conftest import add_event
+
+    from roadsense.common.db import row
+    from roadsense.core import reports
+    add_event(event_id, 44.039, -64.716)
+    with session() as conn:
+        rid = reports.create_or_merge(conn, event_id, "high", "x", authority, 15, jurisdiction=authority)["report"]["id"]
+        r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (rid,)).fetchone())
+        pl = open311.build_payload(r)
+        reports.set_status(conn, rid, "approved", "reviewer", approved_payload_hash=open311.payload_hash(pl),
+                           approved_payload=json.dumps(pl, sort_keys=True), approved_by="reviewer")
+    return rid
+
+
+def _status(rid):
+    with session() as conn:
+        return dict(conn.execute("SELECT status, delivery_attempts, last_error, service_request_id FROM reports "
+                                 "WHERE id = ?", (rid,)).fetchone())
+
+
+@pytest.mark.parametrize("authority, why", [
+    ("Region of Queens Municipality", "no contact on file: forward manually"),  # referral, nobody to send it to
+    ("Private road", "no delivery channel"),                                    # not a public road authority
+])
+def test_undeliverable_report_fails_once_and_is_not_marked_sent(db, authority, why):
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    from roadsense.mcp_servers import municipality_server
+    rid = _approved(f"ev-{authority[:3]}", authority)
+    with pytest.raises(ToolError, match=why):
+        municipality_server.deliver(rid)
+    s = _status(rid)
+    assert s["status"] == "delivery_failed" and s["delivery_attempts"] == 1 and why in s["last_error"]
+    assert s["service_request_id"] is None
+
+
+def test_referral_without_contact_still_saves_the_package(db):
+    from roadsense.common.config import settings
     info = open311.service_info("Region of Queens Municipality")
     payload = {"authority": info["authority"], "channel": "referral", "service_code": "POTHOLE", "lat": 44.039,
                "long": -64.716, "address_string": "Gorham St", "description": "Pothole.", "media_url": "x",
                "attributes": {}}
-    notice = delivery.submit(payload)["notice"]
-    assert "no contact on file: forward manually" in notice and "None" not in notice
+    with pytest.raises(delivery.Undeliverable, match="forward manually"):
+        delivery.submit(payload)
+    assert list((settings.data_dir / "referrals").glob("REF-*.json"))
+
+
+def test_owner_skips_malformed_rows(online):
+    line = {"the_geom": {"type": "LineString", "coordinates": [[LON - 0.001, LAT + 5 / 111_320],
+                                                                [LON + 0.001, LAT + 5 / 111_320]]},
+            "street": "Line St", "owner": "M", "owner_desc": "Municipal"}
+    broken = [{"the_geom": None, "street": "A", "owner": "M"}, {"the_geom": {"coordinates": [[[1]]]}, "owner": "M"},
+              {"street": "No geometry", "owner": "TIR"}]
+    online([*broken, line, _row("TIR", "Duke St", 15)])
+    with session() as conn:
+        o = ownership.road_owner(conn, LAT, LON)
+    assert o["owner"] == "M" and o["street"] == "Line St"
+
+
+def test_municipal_owner_outside_boundaries_uses_rules():
+    place = _place(muni=None, cls="motorway", ref="NS 103")
+    assert geo.jurisdiction_candidates(place, _owner("M")) == geo.jurisdiction_candidates(place)

@@ -53,7 +53,7 @@ def deliver(report_id: int, actor: str = "mcp:municipality") -> dict:
         try:
             ack = delivery.submit(payload, report)
         except delivery.DeliveryError as e:
-            final = attempt >= settings.max_delivery_attempts
+            final = isinstance(e, delivery.Undeliverable) or attempt >= settings.max_delivery_attempts
             nxt = None if final else (datetime.now(timezone.utc) + timedelta(
                 seconds=delivery.backoff_seconds(attempt))).isoformat(timespec="seconds")
             conn.execute("INSERT INTO deliveries (report_id, kind, channel, ok, detail, ts) VALUES (?,?,?,?,?,?)",

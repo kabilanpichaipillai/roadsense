@@ -155,10 +155,7 @@ def _owned_by(code: str, desc: str | None, street: str | None, muni: str | None,
     if code == "TIR":
         return {"authority": provincial, "confidence": "high", "evidence": f"NSRN: {road} is owned by the Province"}
     if code == "M":
-        if muni:
-            return {"authority": muni, "confidence": "high", "evidence": f"NSRN: {road} is municipally owned, in {muni}"}
-        return {"authority": None, "confidence": "medium",
-                "evidence": f"NSRN: {road} is municipally owned, but the point is outside known boundaries"}
+        return {"authority": muni, "confidence": "high", "evidence": f"NSRN: {road} is municipally owned, in {muni}"}
     name = NON_PUBLIC.get(code, f"Other owner ({desc or code})")
     return {"authority": name, "confidence": "low",
             "evidence": f"NSRN: {road} is owned by {desc or code}; no public road authority to file with"}
@@ -178,8 +175,9 @@ def jurisdiction_candidates(place: dict, owner: dict | None = None) -> list[dict
 
     r = rules()
     provincial = r.get("provincial_authority", PROVINCIAL)
-    if owner and owner.get("owner"):
-        muni = place.get("municipality")
+    muni = place.get("municipality")
+    # a municipal road needs a municipality to name; without one (outside every boundary) the rules decide
+    if owner and owner.get("owner") and (muni or owner["owner"] != "M"):
         best = _owned_by(owner["owner"], owner.get("owner_desc"), owner.get("street"), muni, provincial)
         tie = owner.get("tie")
         if tie:
