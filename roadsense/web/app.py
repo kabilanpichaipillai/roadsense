@@ -186,6 +186,21 @@ def forecast_history():
     return agent("GET", "/forecast/history")
 
 
+@app.get("/api/risk")
+def risk(request: Request):
+    return agent("GET", "/risk", params=dict(request.query_params))
+
+
+@app.get("/api/equity")
+def equity(request: Request):
+    return agent("GET", "/equity", params=dict(request.query_params))
+
+
+@app.get("/api/equity/records")
+def equity_records(request: Request):
+    return agent("GET", "/equity/records", params=dict(request.query_params))
+
+
 @app.get("/api/external")
 def external(source: str | None = None):
     return agent("GET", "/external", params={"source": source} if source else None)
@@ -315,6 +330,11 @@ def follow_up(request: Request):
 @app.post("/api/forecast/run")
 def forecast_run(request: Request, force: bool = False):
     return agent("POST", "/forecast/run", need(request, "review"), params={"force": force}, timeout=180)
+
+
+@app.post("/api/risk/run")
+def risk_run(request: Request):
+    return agent("POST", "/risk/run", need(request, "review"), timeout=180)
 
 
 @app.post("/api/external/sync")

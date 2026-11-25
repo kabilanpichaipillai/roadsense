@@ -219,6 +219,8 @@ research synthesis in [docs/research-synthesis.md](docs/research-synthesis.md):
 | **Map** | Leaflet map (vendored) coloured by status, sized by independent drivers |
 | **Road condition** | Segment-level condition estimate (0-100, PCI-style deducts per 100 m) from open defects, worst first |
 | **Pothole risk** | Freeze-thaw pothole risk forecast per road segment for the next 14 days: High/Medium/Low counts, a risk map, a filterable table with the main factors, and a page per segment with its sightings, ECCC weather and factor breakdown. A labelled heuristic, with its evaluation alongside |
+| **Exposure risk** | Each report's physical severity, exposure (cycling, pedestrian, bus and road context from OpenStreetMap) and overall risk kept as separate values, Low/Medium/High/Critical, on a map and in a table filterable by risk, damage, neighbourhood, road class and nearby infrastructure. The report page shows every factor and feature |
+| **Repair equity** | Repair times by neighbourhood from the city's own service requests and RoadSense reports: median and average, response/inspection/repair kept apart, like-with-like comparisons, possible differences flagged with their sample sizes and the factors that could explain them |
 | **Agent activity** | Every plan, verdict and tool call, filterable by agent and trip |
 | **Service standards** | Filed reports against each authority's published service standard (overdue, approaching, completed within target), configurable rules and holidays, and each report's hash-chained duty-of-care ledger: [docs/service-standards.md](docs/service-standards.md) |
 | **Authorities** | Halifax 311 (Open311) requests, NS Public Works referrals, Follow-up agent, driver notifications |
@@ -272,6 +274,44 @@ Limitations: station air temperature is not pavement temperature; the public for
 there is no traffic data; and the demo data has no real crack-to-pothole history, so evaluation and the history
 factor report "insufficient data" until real repeat drives exist.
 
+## Exposure-weighted risk and the Repair Equity Audit
+
+**Exposure-weighted risk.** The same pothole is more dangerous in a bike lane or at a crossing than on a quiet street.
+For every report RoadSense keeps three separate values (the detector's confidence is never changed):
+
+| Value | Weight in overall | From |
+|---|---:|---|
+| Physical severity | 50% | The existing severity band (width for potholes, box area for cracks) × damage class, + repeat drivers. Depth is not measured |
+| Cyclist exposure | 20% | Bike lane tagged on the same road (full weight) or a cycle lane/path nearby (reduced: may not share the road) |
+| Pedestrian exposure | 15% | Pedestrian crossing, school, footway/sidewalk nearby |
+| Public transport exposure | 10% | Bus stop nearby |
+| Road context | 5% | OSM road class from the existing geocoding |
+
+- Nearby features come from OpenStreetMap through the **Overpass API** (Nominatim's reverse lookup returns only the
+  road), cached in `geocache` and refreshed after `ROADSENSE_OSM_CACHE_DAYS`. Each OSM element counts once, in one
+  category, and only the most relevant feature of a category scores. Relevance falls linearly with distance within
+  the configured limits (`roadsense/core/exposure_rules.json`, documented in the file).
+- **Exposure is a proxy, not measured traffic.** A school or bus stop nearby is a reason to expect people, not a count
+  of them. The weights are illustrative starting values, not validated safety measurements.
+- Low / Medium (≥ 0.35) / High (≥ 0.55) / **Critical** (≥ 0.75 *and* the severity model's urgent band S4, so exposure
+  alone never makes a minor defect critical). Without OSM data the exposure is "unknown" and data quality drops.
+- The `score_exposure` job scores new or changed reports every `ROADSENSE_EXPOSURE_MINUTES`; a score is recomputed
+  only when the report, its OSM data or the rules change.
+
+**Repair Equity Audit.** Uses the city's own service requests (the existing read-only ArcGIS/Cityworks sync,
+`ROADSENSE_CITY_SR_LAYER_URL`) and RoadSense reports sent to an authority (submitted → closed), a report the city
+also holds counted once.
+
+- Response (→ acknowledged), inspection and repair (→ completed) times are separate and computed only when both dates
+  exist; average, median, min and max are shown, with the number of records behind each.
+- Neighbourhood comes from a neighbourhood/community field on the city record or the cached OpenStreetMap suburb;
+  anything else is **Unassigned**, never guessed.
+- A neighbourhood is flagged as a **possible difference in service delivery** only when its median repair time is
+  ≥ 1.25× the rest of the city's, a Mann-Whitney U test gives p < 0.05, and both sides have ≥ 10 completed repairs.
+  The same comparison is repeated within each damage category and road class. A flag lists what could explain it
+  (damage mix, road classes, volume, missing dates); it is not a finding of unfair treatment.
+- Dashboards show aggregates; the record list behind a neighbourhood has no driver, trip or reviewer data.
+
 ## Keyless demo
 
 ```bash
@@ -288,7 +328,7 @@ INCOMPLETE after an upgrade, re-record with `--record`. Browse the result with `
 ## Evidence
 
 ```bash
-python scripts/check.py                                   # ruff + 139 tests + pip-audit (no known vulnerabilities)
+python scripts/check.py                                   # ruff + 201 tests + pip-audit (no known vulnerabilities)
 python scripts/eval_verifier.py --split <RDD>/val --tune  # choose the verification rule on validation data
 python scripts/eval_verifier.py --split <RDD>/test        # report it once on test
 python scripts/eval_agents.py [--llm]                     # 42 decision scenarios end to end
@@ -307,7 +347,8 @@ roadsense/
   common/       config, detectors, SQLite schema (+ migrations, append-only audit), edge→API schema
   edge/         gps, camera geometry, tracker (BoT-SORT config), redact, process_video, outbox, simulate_gps, make_clip
   core/         verdict + severity + dedupe rules, verification, geocoding + jurisdiction, authority directory + payloads,
-                ECCC weather, freeze-thaw indicators, pothole risk forecast + evaluation
+                ECCC weather, freeze-thaw indicators, pothole risk forecast + evaluation,
+                exposure-weighted risk (OSM Overpass), repair equity audit
   mcp_servers/  detector, geo, reports, municipality (FastMCP, stdio, annotated tools)
   agents/       OpenRouter client (fallback chain, rate limit, cache/replay), MCP toolbox, typed contracts,
                 workflow steps + allow-lists (stages), trip workflow (orchestrator), deterministic safety net
