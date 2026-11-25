@@ -56,8 +56,10 @@ def find_nearby(lat: float, lon: float, class_code: str | None = None, radius_m:
 @mcp.tool(name="reports_create_or_merge", annotations=WRITE)
 def create_or_merge(event_id: str, severity: str, jurisdiction: str, rationale: str) -> dict:
     """Attach a verified event to the matching open report within the dedupe radius (adds a driver confirmation), or
-    create a new report awaiting driver approval. severity: low|medium|high (use detector_severity). jurisdiction:
-    the road authority you chose from geo_find_jurisdiction. rationale: one sentence on the jurisdiction choice."""
+    create a new report awaiting driver approval. A sighting of a report the authority closed is recorded as repair
+    verification evidence instead (action "reopened" or "reobserved"). severity: low|medium|high (use
+    detector_severity). jurisdiction: the road authority you chose from geo_find_jurisdiction. rationale: one
+    sentence on the jurisdiction choice."""
     if severity not in reports.SEVERITY_WEIGHT:
         raise ToolError("severity must be low, medium or high")
     with session() as conn:

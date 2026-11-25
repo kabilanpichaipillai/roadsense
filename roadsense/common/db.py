@@ -125,6 +125,51 @@ CREATE TABLE IF NOT EXISTS labels (
     actor TEXT NOT NULL,
     ts TEXT NOT NULL
 );
+-- frames the edge kept where it passed a closed report: evidence that the defect is (or is not) still there.
+-- One redacted frame per watched spot, never a track; lat/lon is the car position, cleared by the retention policy.
+CREATE TABLE IF NOT EXISTS road_passes (
+    id TEXT PRIMARY KEY,
+    trip_id TEXT NOT NULL,
+    report_id INTEGER REFERENCES reports(id),
+    lat REAL,
+    lon REAL,
+    heading REAL,
+    captured_at TEXT NOT NULL,
+    image_path TEXT NOT NULL,
+    box TEXT,
+    sharpness REAL,
+    brightness REAL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS road_passes_trip ON road_passes (trip_id);
+-- independent repair verification history: one row per (report, new observation), append-only like the audit log
+CREATE TABLE IF NOT EXISTS repair_verifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER NOT NULL REFERENCES reports(id),
+    original_event_id TEXT REFERENCES events(id),
+    observation_kind TEXT NOT NULL,
+    observation_id TEXT NOT NULL,
+    trip_id TEXT,
+    observed_at TEXT,
+    verified_at TEXT NOT NULL,
+    distance_m REAL,
+    original_class TEXT,
+    observed_class TEXT,
+    confidence REAL,
+    quality TEXT,
+    clean INTEGER NOT NULL DEFAULT 0,
+    result TEXT NOT NULL CHECK (result IN ('verified', 'not_verified', 'inconclusive')),
+    reason TEXT NOT NULL,
+    original_image TEXT,
+    followup_image TEXT,
+    evidence_hash TEXT NOT NULL,
+    UNIQUE (report_id, observation_id)
+);
+CREATE INDEX IF NOT EXISTS repair_verifications_report ON repair_verifications (report_id, id);
+CREATE TRIGGER IF NOT EXISTS repair_verifications_no_update BEFORE UPDATE ON repair_verifications
+BEGIN SELECT RAISE(ABORT, 'verification history is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS repair_verifications_no_delete BEFORE DELETE ON repair_verifications
+BEGIN SELECT RAISE(ABORT, 'verification history is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
 BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
@@ -146,10 +191,15 @@ MIGRATIONS = {
                 "delivery_attempts": "INTEGER NOT NULL DEFAULT 0", "last_error": "TEXT", "next_attempt_at": "TEXT",
                 "external_ref": "TEXT", "corroborations": "INTEGER NOT NULL DEFAULT 0",
                 "severity_band": "TEXT", "repair_target_days": "INTEGER", "road_class": "TEXT", "road_name": "TEXT",
-                "pending_update": "INTEGER NOT NULL DEFAULT 0"},
+                "pending_update": "INTEGER NOT NULL DEFAULT 0",
+                # independent repair verification, kept apart from the authority's status (status = 'fixed')
+                "closed_at": "TEXT", "verification_status": "TEXT", "verification_updated_at": "TEXT",
+                "reopened_at": "TEXT", "reopen_reason": "TEXT", "reopen_event_id": "TEXT"},
 }
 
 REPORT_STATUSES = ("pending_approval", "approved", "rejected", "submitted", "fixed", "delivery_failed")
+# RoadSense's own repair check after the authority closes a report (reports.verification_status)
+VERIFICATION_STATUSES = ("awaiting", "verified", "reopened")
 EVENT_STATUSES = ("received", "checked", "verified", "rejected", "processed")
 
 
@@ -170,6 +220,7 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
         for name, kind in columns.items():
             if name not in have:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+    conn.execute("CREATE INDEX IF NOT EXISTS reports_verification ON reports (status, verification_status)")
     return conn
 
 

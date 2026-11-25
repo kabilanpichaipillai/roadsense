@@ -72,8 +72,14 @@ const icon = (n, cls = "") => `<svg class="${cls}" width="16" height="16" viewBo
 /* ---------- vocabulary ---------- */
 const STATUS = {
   pending_approval: ["Awaiting review", "amber"], approved: ["Approved", "blue"], submitted: ["Sent", "violet"],
-  fixed: ["Fixed", "green"], rejected: ["Rejected", ""], delivery_failed: ["Delivery failed", "red"],
+  fixed: ["Closed by authority", "green"], rejected: ["Rejected", ""], delivery_failed: ["Delivery failed", "red"],
 };
+// RoadSense's own check after the authority closes a report, shown next to (never instead of) the authority's status
+const VERIFICATION = {
+  awaiting: ["Awaiting verification", "amber"], verified: ["Repair verified", "green"], reopened: ["Reopened", "red"],
+};
+const RESULT = { verified: ["Verified", "green"], not_verified: ["Not verified", "red"], inconclusive: ["Inconclusive", "amber"] };
+const verifPill = (s) => { const [t, c] = VERIFICATION[s] || []; return t ? `<span class="pill ${c}"><span class="dot"></span>${esc(t)}</span>` : ""; };
 const CLASS_LABELS = { D40: "Pothole", D20: "Alligator crack", D10: "Transverse crack", D00: "Longitudinal crack" };
 const CHANNELS = { open311: "Open311 API", cityworks: "Cityworks API", arcgis: "ArcGIS feature service", referral: "Referral package" };
 const ROLE_TONE = { admin: "violet", reviewer: "blue", driver: "cyan", viewer: "" };
@@ -120,7 +126,12 @@ function describe(a) {
     case a.action === "report_merged": return [`Merged into report #${subj}`, d?.distance_m != null ? `Another sighting ${d.distance_m} m from an open report, so no new ticket. ${d?.rationale || ""}` : ""];
     case a.action === "status_approved": return ["Approved the exact payload", "Locked by hash"];
     case a.action === "status_submitted": return [`Sent to the authority`, d?.service_request_id ? `Request ${d.service_request_id} via ${d.channel}` : ""];
-    case a.action === "status_fixed": return ["Repair confirmed by the authority", ""];
+    case a.action === "status_fixed": return ["Closed by the authority", "RoadSense will check the spot independently"];
+    case a.action === "repair_awaiting_verification": return ["Awaiting independent verification", typeof d === "string" ? d : ""];
+    case a.action === "repair_verification_completed": return [`Re-observed: ${(RESULT[d?.result] || [d?.result])[0]}`, d?.reason || ""];
+    case a.action === "repair_verified": return ["Repair independently verified", d?.reason || ""];
+    case a.action === "repair_not_verified": return ["Repair not verified: damage seen again", d?.reason || ""];
+    case a.action === "report_reopened": return ["Reopened by RoadSense", d?.reason || ""];
     case a.action === "status_rejected": return ["Rejected by a reviewer", ""];
     case a.action === "status_delivery_failed": return ["Delivery failed: retries exhausted", d?.last_error || ""];
     case a.action === "report_suppressed": return [`Suppressed a repeat of rejected report #${subj}`, d?.distance_m != null ? `Sighting ${d.distance_m} m from a report a reviewer rejected` : ""];
@@ -300,7 +311,8 @@ async function renderOverview() {
     sig("eye", "amber", s.class_disputed, "Damage type disputed", "The two vision models disagree", "#/review"),
     sig("route", "cyan", province, "Routed to the province", "100-series highways, not city 311", "#/authorities"),
     sig("merge", "blue", s.multi_driver_reports, "Seen by 2+ drivers", "Independent confirmations", "#/reports"),
-    sig("wrench", "green", by.fixed || 0, "Repairs confirmed", "Drivers notified", "#/reports?status=fixed"),
+    sig("wrench", "green", by.fixed || 0, "Closed by the authority", `${num(s.repair_verification?.verified)} independently verified`, "#/reports?status=fixed"),
+    s.repair_verification?.reopened ? sig("alert", "red", s.repair_verification.reopened, "Reopened after closure", "Damage seen again by a later trip", "#/reports?status=fixed") : "",
     s.delivery_failed ? sig("alert", "red", s.delivery_failed, "Deliveries failing", "Retrying with back-off", "#/authorities") : "",
   ].join("");
 
@@ -327,6 +339,7 @@ async function renderOverview() {
       </ol>
     </section>
     ${impactCard(s.impact)}
+    ${repairCard(s.repair_verification)}
     <div class="ov-row section">
       <section class="card ov-map"><div class="card-head"><h2>Where the damage is</h2><span class="spacer"></span>${more("#/map", "Open full map")}</div><div id="mini-map" class="map-mini"></div></section>
       <section class="card"><div class="card-head"><h2>Worth a look</h2></div><ul class="ov-sigs">${signals}</ul></section>
@@ -574,7 +587,7 @@ async function renderReportPage(id) {
 function reportDetail(d) {
   const r = d.report, e = d.events.find((x) => x.id === r.best_event_id) || d.events[0] || {};
   const p = d.payload;
-  const trail = d.trail.filter((a) => /^(verdict_|report_|status_|verify|recheck|payload)/.test(a.action));
+  const trail = d.trail.filter((a) => /^(verdict_|report_|status_|verify|recheck|payload|repair_(awaiting|verified|not_verified))/.test(a.action));
   const pending = r.status === "pending_approval";
   const review = can("review");
   const failed = r.status === "delivery_failed" || (r.status === "approved" && r.last_error);
@@ -582,7 +595,7 @@ function reportDetail(d) {
   const city = (d.external || []).filter((x) => x.source === "city_sr");
   const feeds = (d.external || []).filter((x) => x.source !== "city_sr");
   return `
-    <div class="card-head"><h2>${esc(r.class_name)} <span class="muted">#${r.id}</span></h2>${statusPill(r.status)}<span class="spacer"></span><span class="muted small">${esc(r.address || "")}</span></div>
+    <div class="card-head"><h2>${esc(r.class_name)} <span class="muted">#${r.id}</span></h2>${statusPill(r.status)}${verifPill(r.verification_status)}<span class="spacer"></span><span class="muted small">${esc(r.address || "")}</span></div>
     <div class="card-body detail">
       <div class="dgrid">
         <div><button type="button" class="photo-btn" data-zoom="${esc(`${r.class_name} #${r.id} · ${r.address || ""}`)}" aria-label="Enlarge the photo of ${esc(r.class_name)} #${r.id}">
@@ -627,10 +640,58 @@ function reportDetail(d) {
         </div>
       </div>
     </div>
+    ${verificationCard(d.verification)}
     ${(d.deliveries || []).length ? `<div class="card-body" style="padding-top:0"><h3 class="h3">Deliveries</h3><ul class="feed">${d.deliveries.map((x) => `<li>${avatar(x.ok ? "agent:filing" : "fallback")}<div style="flex:1;min-width:0"><span class="what">${esc(x.kind === "update" ? "Update" : "Submission")} via ${esc(CHANNELS[x.channel] || x.channel || "?")}</span> ${x.ok ? `<span class="pill green">ok</span>` : `<span class="pill red">failed</span>`}<div class="why">${esc(x.detail || "")}</div></div><span class="when">${ago(x.ts)}</span></li>`).join("")}</ul></div>` : ""}
     ${pending && review ? `<div class="actionbar"><span class="review-pos" id="review-pos" hidden></span><span class="muted small"><span class="kbd">J</span>/<span class="kbd">K</span> next/previous. Sending always needs a click.</span><span class="spacer"></span>
       <button class="btn btn-danger" id="reject">${icon("x")}Reject</button><button class="btn btn-primary btn-lg" id="approve">${icon("send")}Approve &amp; send to ${esc(authority(r.jurisdiction))}</button></div>` : ""}
     ${pending && !review ? `<div class="actionbar"><span class="muted small">${icon("lock")} Only reviewers can approve or reject reports. You are signed in as ${esc(session.user?.role || "")}.</span></div>` : ""}`;
+}
+
+/* Before and after: the original detection next to the latest re-observation, and why the repair was (not) verified */
+function verificationCard(v) {
+  if (!v) return "";
+  const img = (ref) => {
+    if (!ref) return "";
+    const i = ref.indexOf(":"), kind = ref.slice(0, i), id = ref.slice(i + 1);
+    return kind === "pass" ? `/api/media/pass/${encodeURIComponent(id)}.jpg` : `/api/media/${encodeURIComponent(id)}.jpg`;
+  };
+  const when = (ts) => ts ? esc(new Date(ts).toLocaleString()) : "–";
+  const where = (o) => o && o.lat != null ? `<span class="mono">${o.lat.toFixed(5)}, ${o.lon.toFixed(5)}</span>` : `<span class="muted">not kept</span>`;
+  const o = v.original || {}, l = v.latest;
+  const side = (title, src, alt, rows) => `<figure class="ba-side"><figcaption class="h3">${title}</figcaption>
+      ${src ? `<button type="button" class="photo-btn" data-zoom="${esc(alt)}" aria-label="Enlarge: ${esc(alt)}"><img class="detail-photo" src="${src}" alt="${esc(alt)}"><span class="photo-hint">${icon("zoom")}Enlarge</span></button>`
+            : `<div class="ba-empty muted">${icon("clock")}No trip has passed this spot since the closure</div>`}
+      <dl class="ba-facts">${rows.map(([k, val]) => `<dt>${k}</dt><dd>${val}</dd>`).join("")}</dl></figure>`;
+  const tone = { verified: "green", reopened: "red", awaiting: "amber" }[v.state] || "blue";
+  const head = { verified: "The repair was independently verified", reopened: "The damage is still there: RoadSense reopened this report",
+    awaiting: l ? "Not verified yet: the evidence so far is inconclusive" : "Waiting for a vehicle to pass the spot again" }[v.state];
+  const hist = v.history || [];
+  const pill = (res) => `<span class="pill ${(RESULT[res] || [])[1] || ""}">${esc((RESULT[res] || [res])[0])}</span>`;
+  return `<div class="card-body" style="padding-top:0"><h3 class="h3">Independent repair verification</h3>
+    <div class="callout ${tone}">${icon(v.state === "reopened" ? "alert" : v.state === "verified" ? "wrench" : "clock")}<div><b>${esc(head)}.</b> ${esc(v.reason || "")}
+      <div class="small muted">The authority's status stays “${esc((STATUS[v.authority_status] || [v.authority_status])[0])}” (closed ${when(v.closed_at)}); this check is RoadSense's own.</div></div></div>
+    <div class="ba">
+      ${side("Original detection", img(o.image), "Original detection", [["Detected", when(o.captured_at)], ["Location", where(o)], ["Class", esc(CLASS_LABELS[o.class_code] || o.class_code || "–")], ["Confidence", o.confidence != null ? o.confidence.toFixed(2) : "–"]])}
+      ${side("Latest follow-up", l ? img(l.image) : "", "Latest follow-up observation", l ? [["Observed", when(l.observed_at)], ["Location", where(l)], ["Distance", l.distance_m != null ? `${l.distance_m} m from the original` : "–"], ["Result", pill(l.result)]] : [["Result", "–"]])}
+    </div>
+    ${hist.length ? `<div class="ba-hist"><table class="table"><thead><tr><th>When</th><th>Observation</th><th>Distance</th><th>Seen</th><th>Result</th><th>Why</th></tr></thead><tbody>${hist.map((h) => `<tr><td class="small">${ago(h.verified_at)}</td><td class="small">${esc(h.observation_kind === "pass" ? "Clean-pass frame" : "Detection")} · trip ${esc(h.trip_id || "")}</td><td class="small">${h.distance_m != null ? h.distance_m + " m" : "–"}</td><td class="small">${h.observed_class ? esc(h.observed_class) + (h.confidence != null ? " " + h.confidence.toFixed(2) : "") : "nothing"}</td><td>${pill(h.result)}</td><td class="small">${esc(h.reason)}<div class="muted mono" title="SHA-256 of the evidence">${esc(h.evidence_hash.slice(0, 12))}…</div></td></tr>`).join("")}</tbody></table></div>` : ""}
+  </div>`;
+}
+
+/* Repair Verification Rate: verified / conclusively re-observed. Not-yet-seen repairs are not failures. */
+function repairCard(m) {
+  if (!m || !m.closed_by_authority) return "";
+  const tile = (ic, tone, value, label, hint) => `<div class="card kpi"><div class="label">${label}<span class="ic ${tone}">${icon(ic)}</span></div><div class="value">${value}</div><div class="hint">${hint}</div></div>`;
+  return `<section class="section" aria-labelledby="ov-repair-h">
+    <div class="card-head" style="padding-inline:0"><h2 id="ov-repair-h">Are closed repairs really fixed?</h2><span class="spacer"></span>
+      <span class="desc">Rate = verified ÷ conclusively re-observed (verified + reopened) · repairs nobody has driven past yet are not counted as failures</span></div>
+    <div class="grid kpis">
+      ${tile("wrench", "green", m.verification_rate == null ? "–" : `${m.verification_rate}%`, "Repair verification rate", `${num(m.verified)} of ${num(m.eligible)} conclusively re-observed`)}
+      ${tile("clock", "amber", num(m.awaiting_verification), "Awaiting verification", `${num(m.not_yet_reobserved)} not re-observed yet · ${num(m.awaiting_inconclusive)} inconclusive so far`)}
+      ${tile("wrench", "green", num(m.verified), "Repairs verified", "Clean passes from different trips")}
+      ${tile("alert", "red", num(m.not_verified), "Not verified · reopened", "The damage was detected again")}
+      ${tile("eye", "blue", num(m.inconclusive_verifications), "Inconclusive checks", "Blurred, dark, out of view or a weak detection")}
+    </div></section>`;
 }
 
 function bindDetail(d, after) {
