@@ -183,7 +183,7 @@ def authorities():
         referrals.append({"id": f.stem, "to": d.get("to"), "contact": d.get("contact"), "address": d.get(
             "address_string"), "description": d.get("description"), "service_code": d.get("service_code")})
     return {"open311": city if isinstance(city, list) else [], "referrals": referrals,
-            "open311_inbox": settings.open311_url, "notifications": agent("GET", "/notifications")}
+            "open311_inbox": settings.open311_inbox_url, "notifications": agent("GET", "/notifications")}
 
 
 _llm_cache: dict = {}

@@ -42,6 +42,8 @@ class Settings:
     api_token: str = os.environ.get("ROADSENSE_API_TOKEN", "dev-token-change-me")
     open311_url: str = os.environ.get("ROADSENSE_OPEN311_URL", "http://127.0.0.1:8311")
     open311_api_key: str = os.environ.get("ROADSENSE_OPEN311_API_KEY", "dev-open311-key")
+    # where a person opens the mock city-staff inbox; differs from open311_url when the mock sits behind a proxy
+    open311_inbox_url: str = os.environ.get("ROADSENSE_OPEN311_INBOX_URL") or open311_url
 
     openrouter_api_key: str = os.environ.get("OPENROUTER_API_KEY", "")
     openrouter_base_url: str = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
