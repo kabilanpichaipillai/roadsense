@@ -8,7 +8,11 @@
 # the mock Halifax 311 inbox, so a demo viewer can mark a request repaired; only the app files requests
 311.{$SITE_HOST} {
 	encode zstd gzip
-	@file method POST path /requests.json
+	# block form: a one-line matcher takes one condition, so "method POST path ..." matched every POST
+	@file {
+		method POST
+		path /requests.json
+	}
 	respond @file "Requests are filed by RoadSense, not from outside" 403
 	reverse_proxy roadsense:8311
 }
