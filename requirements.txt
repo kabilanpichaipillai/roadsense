@@ -16,6 +16,7 @@ httpx
 pydantic>=2
 python-dotenv
 gpxpy
+tzdata  # IANA timezones for service-standard deadlines (Windows and slim images have none)
 
 # Identity: OpenID Connect (Entra ID) token verification
 PyJWT[crypto]>=2.8

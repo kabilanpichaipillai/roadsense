@@ -189,6 +189,7 @@ const ROUTES = {
   conditions: ["Road condition", "Segment-level condition estimate from open defects (not a certified survey)", renderConditions],
   forecast: ["Pothole Risk Forecast", "Where cracks may turn into potholes after freeze-thaw (heuristic, not validated)", renderForecast],
   activity: ["Agent activity", "Every plan, decision and tool call, from the append-only audit log", renderActivity],
+  standards: ["Service standards", "Filed reports against each authority's published service standard, with a tamper-evident history", renderStandards],
   authorities: ["Authorities", "Requests delivered to Halifax 311 and Nova Scotia Public Works", renderAuthorities],
   system: ["Trust & system", "Guardrails, privacy and the agent stack", renderSystem],
   users: ["Users", "Who can sign in, and what each role may do", renderUsers],
@@ -1178,6 +1179,162 @@ async function renderConditions() {
         <td>${x.report_ids.slice(0, 6).map((id) => `<a href="#/reports?id=${id}" class="mono small">#${id}</a>`).join(" ")}</td></tr>`).join("")}</tbody></table></div></div>`;
 }
 
+/* ---------- Service standards (deadlines against published standards + duty-of-care ledger) ---------- */
+const SLA = {
+  overdue: ["Overdue", "red"], approaching_deadline: ["Approaching deadline", "amber"], awaiting_response: ["Awaiting response", "blue"],
+  within_standard: ["Within standard", "green"], unable_to_determine: ["Unable to determine", ""],
+  completed_after_target: ["Completed after target", "red"], completed_within_target: ["Completed within target", "green"],
+};
+const slaPill = (s) => { const [t, c] = SLA[s] || [s, ""]; return `<span class="pill ${c}"><span class="dot"></span>${esc(t)}</span>`; };
+const LEDGER_EVENTS = {
+  report_submitted: ["Submitted to the authority", "send"], acknowledged: ["Acknowledged by the authority", "check"],
+  inspection_started: ["Inspection started", "eye"], repair_started: ["Repair started", "wrench"],
+  repair_completed: ["Repair completed", "check"], report_closed: ["Report closed", "lock"], report_reopened: ["Report reopened", "refresh"],
+  authority_status_changed: ["Authority status changed", "building"], deadline_approaching: ["Deadline approaching", "clock"],
+  deadline_passed: ["Deadline passed", "alert"], standard_verified: ["Service standard verified", "shield"],
+  repair_verified: ["Repair verified by RoadSense", "check"], repair_not_verified: ["Damage seen again after closure", "alert"],
+};
+const STAGE_LABEL = { submitted: "Submitted", acknowledged: "Acknowledged", inspection: "Inspection", repair_started: "Repair started", repair_completed: "Repaired", closed: "Closed", reopened: "Reopened" };
+const SS_FILTERS = ["authority", "neighbourhood", "damage", "priority", "status", "date_from", "date_to"];
+const unitShort = (u) => (u === "calendar_days" ? "days" : "business days");
+const inTz = (ts, tz) => ts ? new Date(ts).toLocaleString([], { dateStyle: "medium", timeStyle: "short", timeZone: tz || undefined }) : "–";
+const dueText = (i) => i.days_left == null ? "" : i.days_left < 0 ? `${-i.days_left} ${unitShort(i.time_unit)} late` : i.days_left === 0 ? "due today" : `${i.days_left} ${unitShort(i.time_unit)} left`;
+
+async function renderStandards(params) {
+  const view = stage();
+  const id = params.get("id");
+  const q = new URLSearchParams([...params].filter(([k, v]) => SS_FILTERS.includes(k) && v));
+  const [d, cfg, t] = await Promise.all([api(`/api/service-standards?${q}`), api("/api/service-standards/rules"),
+    id && can("review") ? api(`/api/service-standards/reports/${encodeURIComponent(id)}`) : null]);
+  const m = d.metrics, admin = can("admin");
+  const tile = (ic, tone, value, label, hint, s) => `<a class="card kpi" ${s ? `href="#/standards?${new URLSearchParams({ ...Object.fromEntries(q), status: s })}"` : ""}><div class="label">${esc(label)}<span class="ic ${tone}">${icon(ic)}</span></div><div class="value">${value}</div><div class="hint">${hint}</div></a>`;
+  const opt = (name, values, label, fmt = (v) => v) => `<label>${esc(label)}<select class="input input-sm" name="${name}"><option value="">Any</option>${values.map((v) => `<option value="${esc(v)}" ${q.get(name) === v ? "selected" : ""}>${esc(fmt(v))}</option>`).join("")}</select></label>`;
+  const rowHtml = (i) => `<tr class="click" tabindex="0" data-id="${i.report_id}"><td><span class="strong">${esc(i.class_name)}</span> <span class="faint small mono">#${i.report_id}</span><div class="muted small">${esc(i.address || "")}</div></td>
+      <td class="nowrap">${esc(authority(i.authority))}</td><td>${esc(i.neighbourhood || "–")}</td><td>${i.priority ? `<span class="pill mono">${esc(i.priority)}</span>` : "–"}</td>
+      <td>${esc(STAGE_LABEL[i.stage] || i.stage)}${i.reopened_count ? ` <span class="pill amber">reopened ×${i.reopened_count}</span>` : ""}<div class="muted small">${esc(i.authority_status || "")}${i.authority_notes ? " · " + esc(i.authority_notes) : ""}</div></td>
+      <td class="nowrap">${i.next_due ? `${esc(inTz(i.next_due, "America/Halifax"))}<div class="small ${i.days_left < 0 ? "late" : "muted"}">${esc(i.next_due_kind)} · ${esc(dueText(i))}</div>` : i.completed_at || i.closed_at ? `<span class="muted small">done ${esc(inTz(i.completed_at || i.closed_at, "America/Halifax"))}</span>` : "–"}</td>
+      <td>${slaPill(i.status)}${i.provisional ? `<div class="small muted">provisional: ${esc((SLA[i.provisional] || [i.provisional])[0].toLowerCase())}</div>` : ""}${i.response_on_time === false ? `<div class="small muted">response was late</div>` : ""}</td><td>${icon("arrow", "row-arrow")}</td></tr>`;
+  const ruleScope = (r) => [r.road_category && `road ${r.road_category}`, r.damage_category && (CLASS_LABELS[r.damage_category] || r.damage_category), r.priority && `band ${r.priority}`].filter(Boolean).map(esc).join(" · ") || `<span class="muted">any report</span>`;
+  const verPill = (v) => `<span class="pill ${v === "verified" ? "green" : v === "approved" ? "blue" : "amber"}">${esc(v)}</span>`;
+  view.innerHTML = `
+    <div class="callout blue">${icon("shield")}<div><b>${esc(d.disclaimer)}</b> ${esc(d.method)}</div></div>
+    ${id ? `<div class="card section" id="ss-timeline">${t ? timelineCard(t) : `<div class="card-body muted">${icon("lock")} The report timeline names staff and authority records: reviewers and admins only.</div>`}</div>` : ""}
+    <div class="grid kpis section">
+      ${tile("layers", "blue", num(m.active), "Active reports", `${num(m.total)} tracked in this view`)}
+      ${tile("check", "green", num(m.within_standard), "Within standard", `+ ${num(m.awaiting_response)} awaiting a response`, "within_standard")}
+      ${tile("clock", "amber", num(m.approaching_deadline), "Approaching deadline", "Inside the warning window", "approaching_deadline")}
+      ${tile("alert", "red", num(m.overdue), "Overdue", `${num(m.response_late)} responded after the response target`, "overdue")}
+      ${tile("check", "green", num(m.completed_within_target), "Completed within target", "Repaired or closed on time", "completed_within_target")}
+      ${tile("alert", "red", num(m.completed_after_target), "Completed after target", "Repaired or closed late", "completed_after_target")}
+      ${tile("activity", "violet", m.avg_response_days == null ? "–" : `${m.avg_response_days} d`, "Average response time", m.responded ? `Submission to first response · ${m.responded} report(s) · ${m.avg_response_hours} h` : "No responses yet")}
+      ${tile("wrench", "cyan", m.avg_completion_days == null ? "–" : `${m.avg_completion_days} d`, "Average repair time", m.repaired ? `Repaired reports only (${m.repaired}) · ${m.avg_completion_hours} h` : "Unresolved reports are not counted")}
+      ${tile("search", "", num(m.unable_to_determine), "Unable to determine", "No rule, or an unverified one", "unable_to_determine")}
+    </div>
+    <div class="card section"><form class="card-body form-row" id="ss-filters">
+      ${opt("authority", d.options.authority, "Authority", authority)}${opt("neighbourhood", d.options.neighbourhood, "Neighbourhood")}
+      ${opt("damage", d.options.class_code, "Damage", (c) => CLASS_LABELS[c] || c)}${opt("priority", d.options.priority, "Priority (band)")}
+      ${opt("status", Object.keys(SLA), "Tracking status", (s) => SLA[s][0])}
+      <label>Submitted from<input class="input input-sm" type="date" name="date_from" value="${esc(q.get("date_from") || "")}"></label>
+      <label>to<input class="input input-sm" type="date" name="date_to" value="${esc(q.get("date_to") || "")}"></label>
+      ${q.toString() ? `<a class="btn btn-sm" href="#/standards">${icon("x")}Clear</a>` : ""}</form>
+      ${d.items.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Report</th><th>Authority</th><th>Neighbourhood</th><th>Priority</th><th>Stage · authority status</th><th>Next deadline (Halifax time)</th><th>Tracking</th><th></th></tr></thead><tbody>${d.items.map(rowHtml).join("")}</tbody></table></div>`
+        : emptyState("clock", "Nothing tracked here", q.toString() ? "No filed report matches these filters." : "The service clock starts when an approved report reaches its authority.")}
+      <details class="card-body"><summary class="small">How each tracking status is decided</summary><dl class="small">${Object.entries(d.definitions).map(([k, v]) => `<dt style="margin-top:8px">${slaPill(k)}</dt><dd style="margin:4px 0 0">${esc(v)}</dd>`).join("")}</dl></details></div>
+    <div class="card section"><div class="card-head"><h2>Service standards</h2><span class="pill">${cfg.rules.length}</span><span class="spacer"></span><span class="muted small">Editing a rule never moves deadlines already started: each report keeps the snapshot it was filed under.</span></div>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Authority</th><th>Applies to</th><th>Response</th><th>Completion</th><th>Effective</th><th>Source</th><th>Verification</th><th>Reports</th>${admin ? "<th></th>" : ""}</tr></thead><tbody>
+      ${cfg.rules.map((r) => `<tr data-rule="${r.id}"><td><b>${esc(authority(r.authority))}</b><div class="muted small">${esc(r.jurisdiction || "")}</div></td><td>${ruleScope(r)}</td>
+        <td>${r.response_days == null ? "–" : `${r.response_days} ${unitShort(r.time_unit)}`}</td><td>${r.completion_days == null ? "–" : `${r.completion_days} ${unitShort(r.time_unit)}`}</td>
+        <td class="small nowrap">${esc(r.effective_from)} → ${esc(r.effective_to || "open")}</td><td class="small">${r.source_url ? `<a href="${esc(r.source_url)}" target="_blank" rel="noopener noreferrer">official page${icon("ext")}</a>` : `<span class="muted">none on file</span>`}${r.notes ? `<div class="muted small" title="${esc(r.notes)}">${esc(r.notes.slice(0, 90))}${r.notes.length > 90 ? "…" : ""}</div>` : ""}</td>
+        <td>${verPill(r.verification)}${r.last_reviewed ? `<div class="muted small">reviewed ${esc(r.last_reviewed)}${r.approved_by ? " · " + esc(r.approved_by) : ""}</div>` : ""}</td><td class="mono">${r.reports}</td>
+        ${admin ? `<td class="nowrap"><select class="input input-sm ver" aria-label="Verification of rule ${r.id}">${cfg.verifications.map((v) => `<option ${v === r.verification ? "selected" : ""}>${v}</option>`).join("")}</select>${r.effective_to ? "" : ` <button class="btn btn-sm retire" type="button">Retire</button>`}</td>` : ""}</tr>`).join("")}</tbody></table></div>
+      ${admin ? `<form class="card-body form-row" id="ss-new-rule" autocomplete="off">
+        <label>Authority<select class="input input-sm" name="authority">${cfg.authorities.map((a) => `<option>${esc(a)}</option>`).join("")}</select></label>
+        <label>Road category<input class="input input-sm" name="road_category" placeholder="any (e.g. primary)"></label>
+        <label>Damage<select class="input input-sm" name="damage_category"><option value="">Any</option>${cfg.damage_categories.map((c) => `<option value="${c}">${esc(CLASS_LABELS[c] || c)}</option>`).join("")}</select></label>
+        <label>Priority<select class="input input-sm" name="priority"><option value="">Any</option>${cfg.priorities.map((p) => `<option>${p}</option>`).join("")}</select></label>
+        <label>Response<input class="input input-sm" name="response_days" type="number" min="0" placeholder="days"></label>
+        <label>Completion<input class="input input-sm" name="completion_days" type="number" min="0" placeholder="days"></label>
+        <label>Unit<select class="input input-sm" name="time_unit">${cfg.units.map((u) => `<option value="${u}">${unitShort(u)}</option>`).join("")}</select></label>
+        <label>Effective from<input class="input input-sm" type="date" name="effective_from" required></label>
+        <label>Official source<input class="input input-sm" name="source_url" type="url" placeholder="https://…"></label>
+        <label>Verification<select class="input input-sm" name="verification">${cfg.verifications.map((v) => `<option>${v}</option>`).join("")}</select></label>
+        <button class="btn btn-primary btn-sm" type="submit">${icon("plus")}Add rule</button></form>` : ""}</div>
+    <div class="card section"><div class="card-head"><h2>Holidays</h2><span class="pill">${cfg.holidays.length}</span><span class="spacer"></span><span class="muted small">Skipped by business-day deadlines. Configure observed dates; changes apply to reports filed afterwards.</span></div>
+      <div class="card-body chip-row">${cfg.holidays.map((h) => `<span class="pill" data-day="${esc(h.day)}" data-auth="${esc(h.authority)}"><span class="mono">${esc(h.day)}</span> ${esc(h.name)}${h.authority ? ` · ${esc(authority(h.authority))}` : ""}${admin ? ` <button type="button" class="btn-ghost rm" aria-label="Remove ${esc(h.name)} ${esc(h.day)}">${icon("x")}</button>` : ""}</span>`).join(" ")}</div>
+      ${admin ? `<form class="card-body form-row" id="ss-new-holiday"><label>Date<input class="input input-sm" type="date" name="day" required></label><label>Name<input class="input input-sm" name="name" required maxlength="80"></label>
+        <label>Authority<select class="input input-sm" name="authority"><option value="">All authorities</option>${cfg.authorities.map((a) => `<option>${esc(a)}</option>`).join("")}</select></label><button class="btn btn-sm" type="submit">${icon("plus")}Add holiday</button></form>` : ""}</div>`;
+
+  $("#ss-filters").onchange = (ev) => {
+    const f = new URLSearchParams([...new FormData(ev.currentTarget)].filter(([, v]) => v));
+    location.hash = `#/standards${f.toString() ? "?" + f : ""}`;
+  };
+  $$("tr[data-id]", view).forEach((tr) => {
+    tr.onclick = () => { const f = new URLSearchParams(q); f.set("id", tr.dataset.id); location.hash = `#/standards?${f}`; };
+    tr.onkeydown = (e) => { if (e.key === "Enter") tr.onclick(); };
+  });
+  if (t) bindTimeline(t, () => renderStandards(params));
+  if (!admin) return;
+  const patch = async (rid, body, done) => { try { await api(`/api/service-standards/rules/${rid}`, { method: "PATCH", body: JSON.stringify(body) }); toast(done); } catch (e) { toast(e.message, false); } renderStandards(params); };
+  $$("tr[data-rule]", view).forEach((tr) => {
+    const rid = tr.dataset.rule;
+    $(".ver", tr).onchange = (e) => patch(rid, { verification: e.target.value }, `Rule ${rid} is now ${e.target.value}`);
+    const retire = $(".retire", tr);
+    if (retire) retire.onclick = () => patch(rid, { effective_to: new Date().toISOString().slice(0, 10) }, `Rule ${rid} retired from today`);
+  });
+  const post = (form, path, done) => form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = Object.fromEntries([...new FormData(ev.target)].filter(([, v]) => v !== ""));
+    try { await api(path, { method: "POST", body: JSON.stringify(f) }); toast(done); renderStandards(params); } catch (e) { toast(e.message, false); }
+  };
+  post($("#ss-new-rule"), "/api/service-standards/rules", "Rule added");
+  post($("#ss-new-holiday"), "/api/service-standards/holidays", "Holiday added");
+  $$("[data-day] .rm", view).forEach((b) => b.onclick = async () => {
+    const chip = b.closest("[data-day]");
+    try { await api(`/api/service-standards/holidays/${encodeURIComponent(chip.dataset.day)}${chip.dataset.auth ? "?authority=" + encodeURIComponent(chip.dataset.auth) : ""}`, { method: "DELETE" }); toast("Holiday removed"); renderStandards(params); } catch (e) { toast(e.message, false); }
+  });
+}
+
+function timelineCard(t) {
+  const c = t.clock, r = t.report, rule = t.rule, tz = c?.timezone || "America/Halifax", ok = t.integrity.ok;
+  const entry = (e) => {
+    const [label, ic] = LEDGER_EVENTS[e.event_type] || [e.event_type.replace(/_/g, " "), "file"];
+    const x = e.data || {};
+    const move = x.previous_status && x.previous_status !== x.new_status ? `${esc(STAGE_LABEL[x.previous_status] || x.previous_status)} → ${esc(STAGE_LABEL[x.new_status] || x.new_status)} · ` : "";
+    return `<li><span class="avatar pill">${icon(ic)}</span><div class="who">${esc(label)} <span class="muted small">· ${esc(inTz(x.event_at || e.ts, tz))} · ${esc(e.actor)} · ${esc(x.source || "")}</span></div>
+      <div class="say">${move}${x.tracking_after ? `tracking: ${esc((SLA[x.tracking_after] || [x.tracking_after])[0].toLowerCase())}` : ""}${x.authority_status ? ` · authority: ${esc(x.authority_status)}${x.authority_notes ? " (" + esc(x.authority_notes) + ")" : ""}` : ""}${x.note ? `<div>${esc(x.note)}</div>` : ""}</div>
+      <div class="small faint mono" title="SHA-256 of this entry, chained to the previous one">${icon("lock")} ${esc(e.hash.slice(0, 16))}… ← ${esc(e.prev_hash.slice(0, 8))}…</div></li>`;
+  };
+  return `<div class="card-head"><h2>${esc(r.class_name)} <span class="muted">#${r.id}</span> · duty-of-care ledger</h2>${t.tracking ? slaPill(t.tracking.status) : ""}<span class="spacer"></span><a class="btn btn-sm btn-ghost" href="#/reports?id=${r.id}">Open report${icon("arrow")}</a><a class="btn btn-sm btn-ghost" href="#/standards" aria-label="Close the timeline">${icon("x")}</a></div>
+    <div class="card-body">
+      <div class="callout ${ok ? "green" : "red"}">${icon(ok ? "lock" : "alert")}<div><b>${ok ? "Integrity check passed" : "Integrity check FAILED"}</b> · ${t.integrity.entries} entr${t.integrity.entries === 1 ? "y" : "ies"}${t.integrity.head ? ` · chain head <code>${esc(t.integrity.head.slice(0, 16))}…</code>` : ""}. ${ok ? "Every entry's SHA-256 hash and its link to the previous entry were recomputed and match." : t.integrity.problems.map((p) => esc(`#${p.id ?? "?"}: ${p.problem}`)).join("; ")}</div></div>
+      ${c ? `<div class="facts" style="margin-top:12px">
+        <div class="fact"><div class="k">Authority</div><div class="v">${esc(authority(c.authority))}</div></div>
+        <div class="fact"><div class="k">Submitted</div><div class="v small">${esc(inTz(c.submitted_at, tz))}</div></div>
+        <div class="fact"><div class="k">Response due</div><div class="v small">${esc(inTz(c.response_due, tz))}</div></div>
+        <div class="fact"><div class="k">Completion due</div><div class="v small">${esc(inTz(c.completion_due, tz))}</div></div>
+        <div class="fact"><div class="k">Stage</div><div class="v">${esc(STAGE_LABEL[c.stage] || c.stage)}</div></div>
+        <div class="fact"><div class="k">Standard</div><div class="v small">${rule ? `#${esc(rule.id)} · ${esc(rule.completion_days ?? "–")} ${esc(unitShort(rule.time_unit))} · ${esc(rule.verification)}${c.rule_verified_at ? " (verified later)" : ""}` : "none"}</div></div>
+      </div>
+      <div class="small muted" style="margin-top:8px">${esc(t.tracking?.reason || "")}${c.note ? ` · ${esc(c.note)}` : ""}. Times in ${esc(tz)}.${rule?.calendar?.holidays_in_window?.length ? ` Holidays skipped: ${rule.calendar.holidays_in_window.map(esc).join(", ")}.` : ""}</div>` : `<div class="muted" style="margin-top:12px">Not filed with an authority yet: no service clock.</div>`}
+      <h3 class="h3" style="margin-top:16px">History</h3>
+      ${t.ledger.length ? `<ul class="timeline">${t.ledger.map(entry).join("")}</ul>` : `<div class="muted">No ledger entries.</div>`}
+      ${c ? `<form class="form-row" id="ss-event" style="margin-top:8px"><label>Record what the authority told you<select class="input input-sm" name="event">${t.manual_events.map((e) => `<option value="${e}">${esc((LEDGER_EVENTS[e] || [e])[0])}</option>`).join("")}</select></label>
+        <label>When (your local time)<input class="input input-sm" type="datetime-local" name="at"></label><label>Note<input class="input input-sm" name="note" maxlength="500" placeholder="e.g. phoned 311, ref 12345"></label>
+        <button class="btn btn-sm btn-primary" type="submit">${icon("plus")}Add to ledger</button></form><div class="small muted" style="margin-top:6px">Entries are append-only: a mistake is corrected by a new entry, never by editing an old one.</div>` : ""}
+    </div>`;
+}
+
+function bindTimeline(t, after) {
+  const form = $("#ss-event");
+  if (!form) return;
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = Object.fromEntries(new FormData(form));
+    const body = { event: f.event, note: f.note || null, ...(f.at ? { at: new Date(f.at).toISOString() } : {}) };
+    try { await api(`/api/service-standards/reports/${t.report.id}/events`, { method: "POST", body: JSON.stringify(body) }); toast("Added to the ledger"); after(); } catch (e) { toast(e.message, false); }
+  };
+}
+
 /* ---------- Pothole Risk Forecast (freeze-thaw heuristic) ---------- */
 const RISK = { high: ["High", "red", "H"], medium: ["Medium", "amber", "M"], low: ["Low", "green", "L"] };
 const RISK_COLORS = { high: "#f0616d", medium: "#ffb547", low: "#5bd18b" };
@@ -1518,7 +1675,7 @@ const palette = {
   el: $("#palette"), q: $("#palette-q"), list: $("#palette-list"), pending: [], items: [], sel: 0, opener: null,
   commands() {
     const nav = [["overview", "grid"], ["trips", "video"], ["review", "inbox"], ["reports", "file"], ["map", "map"],
-      ["conditions", "activity"], ["forecast", "alert"], ["activity", "activity"], ["authorities", "building"], ["system", "shield"],
+      ["conditions", "activity"], ["forecast", "alert"], ["activity", "activity"], ["standards", "clock"], ["authorities", "building"], ["system", "shield"],
       ...(can("admin") ? [["users", "user"]] : [])]
       .map(([r, ic]) => ({ group: "Go to", label: ROUTES[r][0], hint: ROUTES[r][1], icon: ic, run: () => (location.hash = `#/${r}`) }));
     const acts = [

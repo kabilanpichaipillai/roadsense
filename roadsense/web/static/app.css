@@ -1168,6 +1168,8 @@ dialog.sheet { width: min(520px, calc(100vw - 32px)); }
   .table td a.mono { display: inline-flex; align-items: center; min-height: 36px; padding-inline: 4px; }
 }
 
+/* service standards: an overdue deadline reads red without colour alone ("late" is in the text) */
+.late { color: var(--red-text); font-weight: 600; }
 /* ---------- Pothole Risk Forecast ---------- */
 svg.flip { transform: scaleX(-1); }
 .risk-pin { display: inline-grid; place-items: center; border-radius: 50%; background: var(--c); color: #111;

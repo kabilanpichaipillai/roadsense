@@ -292,6 +292,73 @@ CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
 BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
 BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
+-- published service standards (core.service_standards): configuration, edited by admins, never deleted
+CREATE TABLE IF NOT EXISTS service_standards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    authority TEXT NOT NULL,
+    jurisdiction TEXT,
+    road_category TEXT,
+    damage_category TEXT,
+    priority TEXT,
+    response_days INTEGER,
+    completion_days INTEGER,
+    time_unit TEXT NOT NULL DEFAULT 'business_days',
+    timezone TEXT NOT NULL DEFAULT 'America/Halifax',
+    effective_from TEXT NOT NULL,
+    effective_to TEXT,
+    source_url TEXT,
+    verification TEXT NOT NULL DEFAULT 'unverified',
+    last_reviewed TEXT,
+    approved_by TEXT,
+    notes TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS service_standards_no_delete BEFORE DELETE ON service_standards
+BEGIN SELECT RAISE(ABORT, 'service standards are retired with effective_to, never deleted'); END;
+CREATE TABLE IF NOT EXISTS holidays (
+    day TEXT NOT NULL,
+    authority TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    PRIMARY KEY (day, authority)
+);
+-- one service clock per report filed with an authority: the rule snapshot and deadlines are frozen at submission
+CREATE TABLE IF NOT EXISTS service_clocks (
+    report_id INTEGER PRIMARY KEY,
+    authority TEXT,
+    rule_id INTEGER,
+    rule_snapshot TEXT,
+    rule_hash TEXT,
+    timezone TEXT NOT NULL,
+    submitted_at TEXT NOT NULL,
+    response_due TEXT,
+    response_warn_at TEXT,
+    completion_due TEXT,
+    completion_warn_at TEXT,
+    stage TEXT NOT NULL DEFAULT 'submitted',
+    acknowledged_at TEXT,
+    inspection_at TEXT,
+    repair_started_at TEXT,
+    completed_at TEXT,
+    closed_at TEXT,
+    reopened_count INTEGER NOT NULL DEFAULT 0,
+    authority_status TEXT,
+    authority_notes TEXT,
+    neighbourhood TEXT,
+    note TEXT,
+    rule_verified_at TEXT,
+    last_flag TEXT,
+    ledger_head TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS service_clocks_no_delete BEFORE DELETE ON service_clocks
+BEGIN SELECT RAISE(ABORT, 'service clocks are evidence and cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS service_clocks_frozen BEFORE UPDATE ON service_clocks
+WHEN OLD.submitted_at IS NOT NEW.submitted_at OR OLD.response_due IS NOT NEW.response_due
+  OR OLD.completion_due IS NOT NEW.completion_due OR OLD.rule_id IS NOT NEW.rule_id
+  OR OLD.rule_snapshot IS NOT NEW.rule_snapshot OR OLD.rule_hash IS NOT NEW.rule_hash
+BEGIN SELECT RAISE(ABORT, 'a report''s service standard and deadlines are frozen at submission'); END;
 """
 
 # columns added after the first schema; applied to existing databases on connect
@@ -313,7 +380,14 @@ MIGRATIONS = {
                 # independent repair verification, kept apart from the authority's status (status = 'fixed')
                 "closed_at": "TEXT", "verification_status": "TEXT", "verification_updated_at": "TEXT",
                 "reopened_at": "TEXT", "reopen_reason": "TEXT", "reopen_event_id": "TEXT"},
+    # duty-of-care ledger rows (core.ledger) are audit rows with a SHA-256 hash chained per report
+    "audit": {"prev_hash": "TEXT", "hash": "TEXT"},
 }
+# indexes on migrated columns: created after the columns exist
+POST_MIGRATION = """
+CREATE INDEX IF NOT EXISTS audit_subject ON audit (subject, id);
+CREATE UNIQUE INDEX IF NOT EXISTS audit_chain ON audit (subject, prev_hash) WHERE hash IS NOT NULL;
+"""
 
 REPORT_STATUSES = ("pending_approval", "approved", "rejected", "submitted", "fixed", "delivery_failed")
 # RoadSense's own repair check after the authority closes a report (reports.verification_status)
@@ -338,6 +412,7 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
         for name, kind in columns.items():
             if name not in have:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+    conn.executescript(POST_MIGRATION)
     conn.execute("CREATE INDEX IF NOT EXISTS reports_verification ON reports (status, verification_status)")
     return conn
 

@@ -269,6 +269,7 @@ AUDIT_SKIP = {"approved_payload"}  # stored on the report; the hash is enough in
 
 
 def set_status(conn: sqlite3.Connection, report_id: int, status: str, actor: str, **fields) -> dict:
+    before = conn.execute("SELECT status FROM reports WHERE id = ?", (report_id,)).fetchone()
     sets = ["status = ?", "updated_at = ?"] + [f"{k} = ?" for k in fields if k in STATUS_FIELDS]
     conn.execute(f"UPDATE reports SET {', '.join(sets)} WHERE id = ?",
                  [status, now(), *[v for k, v in fields.items() if k in STATUS_FIELDS], report_id])
@@ -278,6 +279,10 @@ def set_status(conn: sqlite3.Connection, report_id: int, status: str, actor: str
         from . import repair
 
         repair.mark_awaiting(conn, report_id, actor)
+    elif status == "submitted" and before is not None and before[0] == "fixed":
+        from . import repair  # the authority reopened its request: the next closure gets a fresh repair check
+
+        repair.reset_for_reopen(conn, report_id, actor)
     return row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
 
 

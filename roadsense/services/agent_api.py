@@ -19,6 +19,7 @@ import secrets
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from datetime import timezone
 
 from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -30,12 +31,13 @@ from ..common.db import REPORT_STATUSES, audit, now, row, session
 from ..common.metrics import install as install_metrics
 from ..common.metrics import metrics
 from ..common.schemas import DamageEvent, RoadPass
-from ..core import condition, external, forecast, geo, impact, media, open311, privacy, repair, reports
+from ..core import condition, external, forecast, geo, impact, ledger, media, open311, privacy, repair, reports, service_standards
 from .jobs import Worker
 
 log = logging.getLogger("roadsense.api")
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 REVIEW_ROLES = ("reviewer", "admin")
+ADMIN_ROLES = ("admin",)
 
 worker = Worker()
 
@@ -534,6 +536,123 @@ def external_waze(feed: dict = Body(...)):
     """A Waze for Cities alerts feed (JSON as downloaded from the Partner Hub)."""
     with session() as conn:
         return external.ingest_detections(conn, "waze", external.parse_waze_alerts(feed))
+
+
+# ---------- service standards and the duty-of-care ledger ----------
+@app.get("/service-standards/dashboard", dependencies=AUTH)
+def standards_dashboard(authority: str | None = None, neighbourhood: str | None = None, damage: str | None = None,
+                        priority: str | None = None, status: str | None = None, date_from: str | None = None,
+                        date_to: str | None = None):
+    """Filed reports against their published service standards (no evidence photos or car positions)."""
+    if status and status not in service_standards.STATUSES:
+        raise HTTPException(400, f"status must be one of {service_standards.STATUSES}")
+    with session() as conn:
+        return service_standards.dashboard(conn, {
+            "authority": authority, "neighbourhood": neighbourhood, "damage": damage, "priority": priority,
+            "status": status, "date_from": (date_from or "")[:10], "date_to": (date_to or "")[:10]})
+
+
+@app.get("/service-standards/rules", dependencies=AUTH)
+def standards_rules():
+    with session() as conn:
+        return {"rules": service_standards.list_rules(conn), "holidays": service_standards.list_holidays(conn),
+                "authorities": sorted(open311.directory()), "units": service_standards.UNITS,
+                "verifications": service_standards.VERIFICATIONS, "priorities": service_standards.PRIORITIES,
+                "damage_categories": service_standards.DAMAGE}
+
+
+@app.post("/service-standards/rules", dependencies=AUTH)
+def standards_create(body: dict = Body(...), who: Actor = Depends(actor)):
+    who.need(ADMIN_ROLES)
+    with session() as conn:
+        try:
+            return service_standards.create_rule(conn, body, who.name)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+
+
+@app.patch("/service-standards/rules/{rule_id}", dependencies=AUTH)
+def standards_update(rule_id: int, body: dict = Body(...), who: Actor = Depends(actor)):
+    """Edit or verify a rule. Reports already filed keep the deadlines they started with."""
+    who.need(ADMIN_ROLES)
+    with session() as conn:
+        try:
+            return service_standards.update_rule(conn, rule_id, body, who.name)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+
+
+@app.post("/service-standards/holidays", dependencies=AUTH)
+def standards_add_holiday(body: dict = Body(...), who: Actor = Depends(actor)):
+    who.need(ADMIN_ROLES)
+    with session() as conn:
+        try:
+            return service_standards.add_holiday(conn, body.get("day", ""), body.get("name", ""),
+                                                 body.get("authority"), who.name)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+
+
+@app.delete("/service-standards/holidays/{day}", dependencies=AUTH)
+def standards_remove_holiday(day: str, authority: str | None = None, who: Actor = Depends(actor)):
+    who.need(ADMIN_ROLES)
+    with session() as conn:
+        if not service_standards.remove_holiday(conn, day, authority, who.name):
+            raise HTTPException(404, "no such holiday")
+    return {"removed": day}
+
+
+@app.get("/service-standards/reports/{report_id}", dependencies=AUTH)
+def standards_timeline(report_id: int, who: Actor = Depends(actor)):
+    """The report's service clock, rule snapshot, ledger and integrity check. Names staff: reviewers only."""
+    who.need(REVIEW_ROLES)
+    with session() as conn:
+        try:
+            return service_standards.timeline(conn, report_id)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+
+
+@app.post("/service-standards/reports/{report_id}/events", dependencies=AUTH)
+def standards_record(report_id: int, body: dict = Body(...), who: Actor = Depends(actor)):
+    """Record what the authority said outside its API (phone, email, a referral reply, a site visit)."""
+    who.need(REVIEW_ROLES)
+    event, note = str(body.get("event", "")), str(body.get("note") or "")[:500] or None
+    if event not in service_standards.MANUAL_EVENTS:
+        raise HTTPException(422, f"event must be one of {service_standards.MANUAL_EVENTS}")
+    at = body.get("at")
+    if at:
+        try:
+            when = service_standards.parse_ts(at)
+        except ValueError as e:
+            raise HTTPException(422, "at must be an ISO timestamp with a timezone") from e
+        if when.timestamp() > time.time() + 300:
+            raise HTTPException(422, "an event cannot be in the future")
+        at = when.astimezone(timezone.utc).isoformat(timespec="seconds")
+    with session() as conn:
+        clock = service_standards.get_clock(conn, report_id)
+        if clock is None:
+            raise HTTPException(409, "the report has not been filed with an authority yet")
+        if at and service_standards.parse_ts(at) < service_standards.parse_ts(clock["submitted_at"]):
+            raise HTTPException(422, "an event cannot be before the report was submitted")
+        entry = service_standards.record_event(conn, report_id, event, who.name, "manual", at=at, note=note)
+        if entry is None:
+            raise HTTPException(409, "the report is already at or past that step")
+        r = row(conn.execute("SELECT status FROM reports WHERE id = ?", (report_id,)).fetchone())
+        if event in ("repair_completed", "report_closed") and r["status"] == "submitted":
+            reports.set_status(conn, report_id, "fixed", who.name)
+        elif event == "report_reopened" and r["status"] == "fixed":
+            reports.set_status(conn, report_id, "submitted", who.name)
+    return entry
+
+
+@app.get("/service-standards/integrity", dependencies=AUTH)
+def standards_integrity(report_id: int | None = None, who: Actor = Depends(actor)):
+    who.need(REVIEW_ROLES)
+    with session() as conn:
+        return ledger.verify(conn, report_id)
 
 
 # ---------- ground truth ----------
