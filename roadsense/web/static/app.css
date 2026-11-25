@@ -1167,3 +1167,6 @@ dialog.sheet { width: min(520px, calc(100vw - 32px)); }
   .toast-x { width: 40px; height: 40px; margin: -10px -10px -10px 0; }
   .table td a.mono { display: inline-flex; align-items: center; min-height: 36px; padding-inline: 4px; }
 }
+
+/* service standards: an overdue deadline reads red without colour alone ("late" is in the text) */
+.late { color: var(--red-text); font-weight: 600; }

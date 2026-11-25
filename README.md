@@ -198,6 +198,7 @@ research synthesis in [docs/research-synthesis.md](docs/research-synthesis.md):
 | **Map** | Leaflet map (vendored) coloured by status, sized by independent drivers |
 | **Road condition** | Segment-level condition estimate (0-100, PCI-style deducts per 100 m) from open defects, worst first |
 | **Agent activity** | Every plan, verdict and tool call, filterable by agent and trip |
+| **Service standards** | Filed reports against each authority's published service standard (overdue, approaching, completed within target), configurable rules and holidays, and each report's hash-chained duty-of-care ledger: [docs/service-standards.md](docs/service-standards.md) |
 | **Authorities** | Halifax 311 (Open311) requests, NS Public Works referrals, Follow-up agent, driver notifications |
 | **Trust & system** | Production checklist, guardrails, privacy and retention, delivery channels, jobs and scheduler, MCP servers |
 | **Users** (admin) | Add people, set roles (admin, reviewer, driver, viewer), disable accounts |

@@ -202,6 +202,56 @@ def system():
                         "signed_media_links": True, "raw_video_deleted": not settings.keep_raw_video}}
 
 
+# ---------- service standards ----------
+@app.get("/api/service-standards")
+def standards_dashboard(request: Request):
+    keys = ("authority", "neighbourhood", "damage", "priority", "status", "date_from", "date_to")
+    return agent("GET", "/service-standards/dashboard",
+                 params={k: request.query_params[k] for k in keys if request.query_params.get(k)})
+
+
+@app.get("/api/service-standards/rules")
+def standards_rules():
+    return agent("GET", "/service-standards/rules")
+
+
+@app.post("/api/service-standards/rules")
+def standards_create(request: Request, body: dict = Body(...)):
+    return agent("POST", "/service-standards/rules", need(request, "admin"), json=body)
+
+
+@app.patch("/api/service-standards/rules/{rule_id}")
+def standards_update(rule_id: int, request: Request, body: dict = Body(...)):
+    return agent("PATCH", f"/service-standards/rules/{rule_id}", need(request, "admin"), json=body)
+
+
+@app.post("/api/service-standards/holidays")
+def standards_add_holiday(request: Request, body: dict = Body(...)):
+    return agent("POST", "/service-standards/holidays", need(request, "admin"), json=body)
+
+
+@app.delete("/api/service-standards/holidays/{day}")
+def standards_remove_holiday(day: str, request: Request, authority: str | None = None):
+    return agent("DELETE", f"/service-standards/holidays/{day}", need(request, "admin"),
+                 params={"authority": authority} if authority else None)
+
+
+@app.get("/api/service-standards/reports/{report_id}")
+def standards_timeline(report_id: int, request: Request):
+    return agent("GET", f"/service-standards/reports/{report_id}", need(request, "review"))
+
+
+@app.post("/api/service-standards/reports/{report_id}/events")
+def standards_record(report_id: int, request: Request, body: dict = Body(...)):
+    return agent("POST", f"/service-standards/reports/{report_id}/events", need(request, "review"), json=body)
+
+
+@app.get("/api/service-standards/integrity")
+def standards_integrity(request: Request, report_id: int | None = None):
+    return agent("GET", "/service-standards/integrity", need(request, "review"),
+                 params={"report_id": report_id} if report_id else None)
+
+
 @app.get("/api/labels")
 def labels():
     return agent("GET", "/labels")

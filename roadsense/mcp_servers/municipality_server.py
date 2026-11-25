@@ -14,7 +14,7 @@ from mcp.types import ToolAnnotations
 
 from ..common.config import settings
 from ..common.db import audit, now, row, session
-from ..core import delivery, open311, reports
+from ..core import delivery, open311, reports, service_standards
 
 mcp = FastMCP("roadsense-municipality")
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
@@ -70,6 +70,8 @@ def deliver(report_id: int, actor: str = "mcp:municipality") -> dict:
                                      channel=ack["channel"], description=payload["description"],
                                      submitted_payload_hash=digest, delivery_attempts=attempt, last_error=None,
                                      next_attempt_at=None)
+        # the service-standard clock starts when the authority has the report (never undoes the delivery)
+        service_standards.start_clock_safely(conn, updated, actor)
     return {"ok": True, **ack, "authority": payload["authority"], "report_status": updated["status"]}
 
 
@@ -109,7 +111,9 @@ def submit_request(report_id: int) -> dict:
 
 @mcp.tool(name="city_request_status", annotations=READ)
 def request_status(report_id: int) -> dict:
-    """Status of a submitted report at the authority (open / closed). Marks the report fixed when closed."""
+    """Status of a submitted report at the authority (open / closed). Marks the report fixed when closed, and back
+    to submitted when the authority reopens it. Every lifecycle change is written to the duty-of-care ledger."""
+    actor = "mcp:municipality"
     with session() as conn:
         report = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
         if report is None or not report["service_request_id"]:
@@ -120,10 +124,17 @@ def request_status(report_id: int) -> dict:
             raise ToolError(str(e)) from e
         fixed = city.get("status") == "closed"
         newly = fixed and report["status"] != "fixed"
+        reopened = not fixed and city.get("status") not in (None, "unknown") and report["status"] == "fixed"
         if newly:
-            reports.set_status(conn, report_id, "fixed", "mcp:municipality")
+            reports.set_status(conn, report_id, "fixed", actor)
+        if reopened:
+            reports.set_status(conn, report_id, "submitted", actor)
+        if city.get("status") not in (None, "unknown"):
+            service_standards.start_clock_safely(conn, report, actor)  # reports filed before tracking existed
+            service_standards.observe_authority(conn, report_id, city.get("status"), city.get("status_notes"),
+                                                actor, f"authority:{report['channel']}")
     return {"report_id": report_id, "channel": report["channel"], "city_status": city.get("status"),
-            "status_notes": city.get("status_notes"), "fixed": fixed, "newly_fixed": newly}
+            "status_notes": city.get("status_notes"), "fixed": fixed, "newly_fixed": newly, "reopened": reopened}
 
 
 if __name__ == "__main__":

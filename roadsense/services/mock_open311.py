@@ -88,6 +88,21 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                          "WHERE service_request_id = ?", (notes, now(), rid))
         return RedirectResponse("/", status_code=303)
 
+    @app.post("/admin/requests/{rid}/status")
+    def set_status(rid: int, status: str = Form("open"), notes: str = Form("")):
+        """City-staff progress (acknowledged, inspection, in progress) or a reopening, for the service-standard demo."""
+        if status not in ("open", "closed"):
+            raise HTTPException(400, "status must be open or closed")
+        with db() as conn:
+            conn.execute("UPDATE requests SET status = ?, status_notes = ?, updated_datetime = ? "
+                         "WHERE service_request_id = ?", (status, notes[:200], now(), rid))
+        return RedirectResponse("/", status_code=303)
+
+    def step(rid, label: str, notes: str, status: str = "open") -> str:
+        return (f"<form method=post action='/admin/requests/{rid}/status' style='display:inline'>"
+                f"<input type=hidden name=status value={status}><input type=hidden name=notes value='{notes}'>"
+                f"<button>{label}</button></form> ")
+
     @app.get("/", response_class=HTMLResponse)
     def inbox():
         with db() as conn:
@@ -96,9 +111,12 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             f"<tr><td>{r['service_request_id']}</td><td>{html.escape(r['service_code'])}</td>"
             f"<td>{html.escape(r['address'] or '')}<br><small>{r['lat']:.5f}, {r['long']:.5f}</small></td>"
             f"<td style='max-width:420px'>{html.escape(r['description'] or '')}</td>"
-            f"<td>{html.escape(r['status'])}</td><td>"
-            + ("" if r["status"] == "closed" else
-               f"<form method=post action='/admin/requests/{r['service_request_id']}/close'>"
+            f"<td>{html.escape(r['status'])}<br><small>{html.escape(r['status_notes'] or '')}</small></td><td>"
+            + (step(r["service_request_id"], "Reopen", "Reopened: damage still present") if r["status"] == "closed"
+               else step(r["service_request_id"], "Acknowledge", "Acknowledged")
+               + step(r["service_request_id"], "Inspect", "Inspection scheduled")
+               + step(r["service_request_id"], "In progress", "Repair in progress")
+               + f"<form method=post action='/admin/requests/{r['service_request_id']}/close' style='display:inline'>"
                "<button>Mark fixed</button></form>") + "</td></tr>" for r in rows)
         return f"""<!doctype html><meta charset=utf-8><title>Halifax 311 inbox (mock)</title>
 <style>body{{font:14px system-ui;margin:24px}}td,th{{border-bottom:1px solid #ddd;padding:6px;text-align:left;
