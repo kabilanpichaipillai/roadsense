@@ -3,7 +3,11 @@ finishes any event the workflow left undecided or unreported (none, when the wor
 had to finish is reported as the fallback rate. Filing and follow-up are this code alone: they have nothing to judge."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
+from ..common.config import settings
 from ..common.db import audit, row, session
+from ..core import service_standards
 from .mcp_client import Toolbox
 from .stages import use
 
@@ -105,6 +109,13 @@ async def follow_up(toolbox: Toolbox) -> dict:
     with session() as conn:
         submitted = [r["id"] for r in conn.execute(
             "SELECT id FROM reports WHERE status = 'submitted' AND channel IN ('open311', 'cityworks', 'arcgis')")]
+        # recently repaired reports are re-checked for a while: an authority can reopen a request it closed
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=settings.reopen_watch_days)).isoformat(
+            timespec="seconds")
+        recheck = [r["id"] for r in conn.execute(
+            "SELECT r.id FROM reports r JOIN service_clocks c ON c.report_id = r.id WHERE r.status = 'fixed' AND "
+            "r.channel IN ('open311', 'cityworks', 'arcgis') AND COALESCE(c.closed_at, c.completed_at, '') >= ?",
+            (cutoff,))]
         fixed_unnotified = [dict(r) for r in conn.execute(
             "SELECT * FROM reports r WHERE status = 'fixed' AND NOT EXISTS "
             "(SELECT 1 FROM notifications n WHERE n.report_id = r.id)")]
@@ -113,6 +124,13 @@ async def follow_up(toolbox: Toolbox) -> dict:
         s = await use(toolbox, "follow_up", "city_request_status", {"report_id": rid})
         if s.get("fixed"):
             fixed.append(rid)
+    reopened = []
+    for rid in recheck:
+        s = await use(toolbox, "follow_up", "city_request_status", {"report_id": rid})
+        if s.get("reopened"):
+            reopened.append(rid)
+    with session() as conn:
+        tracking = service_standards.sweep(conn)
     with session() as conn:
         to_notify = [dict(r) for r in conn.execute(
             "SELECT * FROM reports r WHERE status = 'fixed' AND NOT EXISTS "
@@ -121,4 +139,5 @@ async def follow_up(toolbox: Toolbox) -> dict:
         await use(toolbox, "follow_up", "reports_notify_driver", {"report_id": r["id"], "message":
                            f"Good news: the {r['class_name'].lower()} you reported at {r['address']} has been "
                            "repaired. Thanks for helping keep the roads safe!"})
-    return {"checked": len(submitted), "fixed": sorted(set(fixed) | {r["id"] for r in fixed_unnotified})}
+    return {"checked": len(submitted), "fixed": sorted(set(fixed) | {r["id"] for r in fixed_unnotified}),
+            "reopened": reopened, "service_standards": tracking}

@@ -97,12 +97,14 @@ def sync_city_requests(conn: sqlite3.Connection, layer_url: str | None = None, w
 
 def close_reports_fixed_by_city(conn: sqlite3.Connection) -> list[int]:
     """A RoadSense report linked to a city request that the city closed is marked fixed (closed-loop status)."""
-    from . import reports
+    from . import reports, service_standards
 
     fixed = []
     for r in conn.execute("SELECT r.id FROM reports r JOIN external_requests x ON x.report_id = r.id "
                           "WHERE x.source = 'city_sr' AND x.status = 'closed' AND r.status = 'submitted'").fetchall():
         reports.set_status(conn, r["id"], "fixed", "sync:city")
+        service_standards.observe_authority(conn, r["id"], "closed", "closed in the city's open-data layer",
+                                            "sync:city", "authority:open_data")
         fixed.append(r["id"])
     return fixed
 

@@ -324,3 +324,48 @@ def test_edge_keeps_one_frame_per_watched_spot(tmp_path):
     (p,) = c.flush("trip-edge", tmp_path)
     assert p.report_id == 7 and p.sharpness > 1000 and p.heading == 0.0
     assert (tmp_path / f"pass-{p.id}.jpg").is_file() and (tmp_path / f"pass-{p.id}.json").is_file()
+
+
+# authority reopens a closed request, then closes it again
+def test_authority_reopen_then_reclosure_starts_a_fresh_check(db, monkeypatch):
+    import time
+
+    rid = closed_report()
+    add_pass("p-cycle1", "trip-2")
+    check("trip-2")  # one clean pass in the first cycle (1 of 2)
+    first_closure = get(rid)["closed_at"]
+    replies = iter([{"status": "open", "status_notes": "Reopened: patch failed"},
+                    {"status": "closed", "status_notes": "Repaired again"}])
+    monkeypatch.setattr(delivery, "status", lambda *a, **k: next(replies))
+    assert municipality_server.request_status(rid)["reopened"]
+    r = get(rid)
+    assert r["status"] == "submitted" and r["verification_status"] is None and r["closed_at"] is None
+    assert repair.lifecycle(r) == "In Progress"
+    with session() as conn:
+        assert repair.watchlist(conn) == []  # not watched while the authority is working on it again
+        reset = conn.execute("SELECT detail FROM audit WHERE action = 'repair_verification_reset'").fetchone()
+    assert json.loads(reset[0])["previous"]["closed_at"] == first_closure  # the old cycle stays on record
+
+    time.sleep(1.1)  # closure times have one-second resolution
+    assert municipality_server.request_status(rid)["newly_fixed"]
+    r = get(rid)
+    assert r["verification_status"] == "awaiting" and r["closed_at"] > first_closure
+    add_pass("p-cycle2", "trip-3")
+    assert check("trip-3")["verified"] == []  # the first cycle's pass no longer counts towards this closure
+    assert "1 of 2" in hist(rid)[-1]["reason"] and len(hist(rid)) == 2  # history of both cycles is kept
+    add_pass("p-cycle2b", "trip-4", metres_south=8)
+    assert check("trip-4")["verified"] == [rid]
+
+
+def test_authority_reopen_clears_a_roadsense_reopening(db):
+    rid = closed_report()
+    sighting("ev-again-r", "trip-2", lat=LAT + 3 * M)
+    assert get(rid)["verification_status"] == "reopened"
+    with session() as conn:
+        reports.set_status(conn, rid, "submitted", "mcp:municipality")  # the authority acts on it
+        prev = json.loads(conn.execute("SELECT detail FROM audit WHERE action = 'repair_verification_reset'")
+                          .fetchone()[0])["previous"]
+        reports.set_status(conn, rid, "fixed", "mcp:municipality")
+    assert prev["verification_status"] == "reopened" and prev["reopen_event_id"] == "ev-again-r"
+    r = get(rid)
+    assert r["verification_status"] == "awaiting" and r["reopen_event_id"] is None and repair.lifecycle(r) == "Closed"

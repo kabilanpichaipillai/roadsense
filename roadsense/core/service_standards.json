@@ -1,0 +1,42 @@
+{
+  "_about": "Seed configuration, loaded into the database once (an empty service_standards / holidays table). After that, admins manage rules and holidays on the Service standards page. Every seeded rule is UNVERIFIED: the values come from RoadSense's research notes, not from a checked official publication, so the dashboard reports 'unable to determine' for them until an administrator verifies the source or approves the rule.",
+  "timezone": "America/Halifax",
+  "warn_days": 2,
+  "status_keywords": {
+    "acknowledged": ["acknowledg", "assigned", "accepted", "under review", "reviewed", "logged"],
+    "inspection": ["inspect", "assess", "investigat"],
+    "repair_started": ["in progress", "repair scheduled", "scheduled", "work order", "crew", "dispatched", "repairing"],
+    "closed_without_repair": ["duplicate", "not found", "unable to locate", "no action", "not our", "referred",
+                              "cancel", "not a pothole", "private property"]
+  },
+  "rules": [
+    {"authority": "Halifax Regional Municipality", "jurisdiction": "municipal",
+     "response_days": 10, "completion_days": 30, "time_unit": "business_days",
+     "source_url": "https://www.halifax.ca/transportation/streets-sidewalks/paving-repair/report-a-pothole",
+     "notes": "Research notes: HRM repairs take 7 to 30 business days depending on priority; staff typically connect within 10 business days of a 311 call. Default for anything not covered by a more specific rule."},
+    {"authority": "Halifax Regional Municipality", "jurisdiction": "municipal", "damage_category": "D40",
+     "priority": ["S3", "S4"], "response_days": null, "completion_days": 7, "time_unit": "business_days",
+     "source_url": "https://www.halifax.ca/transportation/streets-sidewalks/paving-repair/report-a-pothole",
+     "notes": "Research notes: priority potholes, 7 business days. Which RoadSense severity bands HRM treats as priority is an assumption to confirm with HRM."},
+    {"authority": "Nova Scotia Public Works", "jurisdiction": "provincial",
+     "response_days": null, "completion_days": 120, "time_unit": "business_days", "source_url": null,
+     "notes": "Research notes: 7 to 120 days on provincial roads. The unit (business or calendar days) and the official source are not verified."},
+    {"authority": "Nova Scotia Public Works", "jurisdiction": "provincial", "damage_category": "D40",
+     "priority": ["S3", "S4"], "response_days": null, "completion_days": 7, "time_unit": "business_days",
+     "source_url": null,
+     "notes": "Research notes: urgent provincial potholes, 7 days. Unit, priority mapping and official source are not verified."}
+  ],
+  "holidays": {
+    "_about": "Illustrative Nova Scotia holiday calendar (observed dates). Confirm each authority's own calendar; add authority-specific days on the Service standards page.",
+    "all": [
+      ["2026-01-01", "New Year's Day"], ["2026-02-16", "Heritage Day"], ["2026-04-03", "Good Friday"],
+      ["2026-05-18", "Victoria Day"], ["2026-07-01", "Canada Day"], ["2026-08-03", "Natal Day"],
+      ["2026-09-07", "Labour Day"], ["2026-10-12", "Thanksgiving"], ["2026-11-11", "Remembrance Day"],
+      ["2026-12-25", "Christmas Day"], ["2026-12-28", "Boxing Day (observed)"],
+      ["2027-01-01", "New Year's Day"], ["2027-02-15", "Heritage Day"], ["2027-03-26", "Good Friday"],
+      ["2027-05-24", "Victoria Day"], ["2027-07-01", "Canada Day"], ["2027-08-02", "Natal Day"],
+      ["2027-09-06", "Labour Day"], ["2027-10-11", "Thanksgiving"], ["2027-11-11", "Remembrance Day"],
+      ["2027-12-27", "Christmas Day (observed)"], ["2027-12-28", "Boxing Day (observed)"]
+    ]
+  }
+}

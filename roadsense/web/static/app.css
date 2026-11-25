@@ -1168,6 +1168,18 @@ dialog.sheet { width: min(520px, calc(100vw - 32px)); }
   .table td a.mono { display: inline-flex; align-items: center; min-height: 36px; padding-inline: 4px; }
 }
 
+/* service standards: an overdue deadline reads red without colour alone ("late" is in the text) */
+.late { color: var(--red-text); font-weight: 600; }
+/* ---------- Pothole Risk Forecast ---------- */
+svg.flip { transform: scaleX(-1); }
+.risk-pin { display: inline-grid; place-items: center; border-radius: 50%; background: var(--c); color: #111;
+  font: 700 11px/1 var(--mono); border: 2px solid var(--bg); box-shadow: 0 1px 4px rgb(0 0 0 / .35); }
+.risk-pin.risk-high { border-radius: 4px; transform: rotate(45deg); }   /* shape differs too, not only colour */
+.risk-pin.risk-high { font-size: 0; }
+.risk-pin.risk-high::after { content: "H"; font-size: 11px; transform: rotate(-45deg); }
+.table.compact th, .table.compact td { padding: 7px 10px; }
+.table .nowrap { white-space: nowrap; }
+
 /* ---------- repair verification: before and after ---------- */
 .ba { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-5); margin-top: var(--space-4); }
 @media (min-width: 760px) { .ba { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
@@ -1186,7 +1198,6 @@ dialog.sheet { width: min(520px, calc(100vw - 32px)); }
 .risk-dot.risk-high, .risk-dot.risk-critical { border-radius: 4px; }   /* shape as well as colour */
 .risk-dot.risk-critical { color: #fff; outline: 2px solid var(--c); outline-offset: 1px; }
 .pill.strong { font-weight: 700; }
-.table.compact th, .table.compact td { padding: 7px 10px; }
 .bars { display: grid; gap: 8px; }
 .bar-row { display: grid; grid-template-columns: minmax(90px, 150px) minmax(0, 1fr) 96px; align-items: center; gap: 10px; }
 .bar-label { font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

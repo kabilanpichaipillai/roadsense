@@ -117,6 +117,8 @@ class Settings:
     max_delivery_attempts: int = int(os.environ.get("ROADSENSE_MAX_DELIVERY_ATTEMPTS", "6"))
     scheduler_enabled: bool = os.environ.get("ROADSENSE_SCHEDULER", "1") != "0"
     follow_up_minutes: float = float(os.environ.get("ROADSENSE_FOLLOW_UP_MINUTES", "60"))
+    # a repaired report is re-checked at the authority this long after closure, to catch a reopening
+    reopen_watch_days: int = int(os.environ.get("ROADSENSE_REOPEN_WATCH_DAYS", "30"))
     external_sync_minutes: float = float(os.environ.get("ROADSENSE_EXTERNAL_SYNC_MINUTES", "30"))
     # ArcGIS FeatureServer layer with the city's open service requests (HRM publishes Cityworks SRs on ArcGIS Hub)
     city_sr_layer_url: str = os.environ.get("ROADSENSE_CITY_SR_LAYER_URL", "")
@@ -131,6 +133,18 @@ class Settings:
     smtp_user: str = os.environ.get("ROADSENSE_SMTP_USER", "")
     smtp_password: str = os.environ.get("ROADSENSE_SMTP_PASSWORD", "")
     smtp_from: str = os.environ.get("ROADSENSE_SMTP_FROM", "")
+
+    # ---- freeze-thaw pothole forecast (a heuristic; weights and thresholds live in core/forecast_rules.json) ----
+    forecast_enabled: bool = os.environ.get("ROADSENSE_FORECAST", "1") != "0"
+    forecast_minutes: float = float(os.environ.get("ROADSENSE_FORECAST_MINUTES", "360"))
+    forecast_horizon_days: int = int(os.environ.get("ROADSENSE_FORECAST_HORIZON_DAYS", "14"))
+    forecast_rules_file: str = os.environ.get("ROADSENSE_FORECAST_RULES_FILE", "")  # default: built-in rules
+    # crack sightings on the same road this close together belong to one segment even across a 100 m bin edge
+    segment_tolerance_m: float = float(os.environ.get("ROADSENSE_SEGMENT_TOLERANCE_M", "25"))
+    # Environment and Climate Change Canada, MSC GeoMet OGC API (climate-daily and citypageweather-realtime)
+    eccc_api_url: str = os.environ.get("ROADSENSE_ECCC_API_URL", "https://api.weather.gc.ca")
+    weather_cache_hours: float = float(os.environ.get("ROADSENSE_WEATHER_CACHE_HOURS", "6"))
+    offline_weather: bool = os.environ.get("ROADSENSE_OFFLINE_WEATHER", "0") == "1"
 
     # ---- exposure-weighted risk and repair equity (weights and distances live in core/exposure_rules.json) ----
     # OpenStreetMap features near a defect (cycleways, crossings, bus stops, schools, footways) via the Overpass API:
