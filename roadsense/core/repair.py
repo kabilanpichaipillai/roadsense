@@ -58,6 +58,22 @@ def mark_awaiting(conn: sqlite3.Connection, report_id: int, actor: str) -> None:
               "closed by the authority; waiting for an independent re-observation")
 
 
+def reset_for_reopen(conn: sqlite3.Connection, report_id: int, actor: str) -> bool:
+    """The authority reopened a request it had closed. The finished verification cycle (its closure time, outcome and
+    reopening evidence) is kept in the audit log and the verification history, then cleared, so the next closure
+    starts a fresh check that only counts observations made after that new closure."""
+    r = _report(conn, report_id)
+    if r is None or r.get("verification_status") is None:
+        return False
+    audit(conn, actor, "repair_verification_reset", f"report:{report_id}",
+          {"reason": "the authority reopened the request", "previous": {
+              k: r.get(k) for k in ("verification_status", "closed_at", "reopened_at", "reopen_reason",
+                                    "reopen_event_id")}})
+    conn.execute("UPDATE reports SET verification_status = NULL, verification_updated_at = ?, closed_at = NULL, "
+                 "reopened_at = NULL, reopen_reason = NULL, reopen_event_id = NULL WHERE id = ?", (now(), report_id))
+    return True
+
+
 def _report(conn, report_id: int) -> dict:
     return row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
 
@@ -219,8 +235,10 @@ def check_passes(conn: sqlite3.Connection, trip_id: str, actor: str = ACTOR) -> 
                     out["attempts"] += 1
                     out["inconclusive"] += 1
                 continue
+            # only passes after the current closure count: a reopened and re-closed request needs fresh evidence
             prior = {t for (t,) in conn.execute("SELECT DISTINCT trip_id FROM repair_verifications "
-                                                "WHERE report_id = ? AND clean = 1", (r["id"],))}
+                                                "WHERE report_id = ? AND clean = 1 AND observed_at >= ?",
+                                                (r["id"], r["closed_at"] or ""))}
             trips = prior | {trip_id}
             need = settings.repair_min_clean_passes
             verified = len(trips) >= need
