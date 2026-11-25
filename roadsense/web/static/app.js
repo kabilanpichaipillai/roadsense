@@ -64,6 +64,7 @@ const ICONS = {
   file: '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
   map: '<path d="M1 6v16l7-4 8 4 7-4V2l-7 4-8-4-7 4z"/><path d="M8 2v16M16 6v16"/>', activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   moon: '<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>',
+  cloud: '<path d="M18 10h-1.3A8 8 0 109 20h9a5 5 0 000-10z"/>',
   zoom: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/>',
   keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
 };
@@ -186,6 +187,7 @@ const ROUTES = {
   reports: ["Reports", "Every defect, merged across drivers", renderReports],
   map: ["Map", "Reports on the road network", renderMap],
   conditions: ["Road condition", "Segment-level condition estimate from open defects (not a certified survey)", renderConditions],
+  forecast: ["Pothole Risk Forecast", "Where cracks may turn into potholes after freeze-thaw (heuristic, not validated)", renderForecast],
   activity: ["Agent activity", "Every plan, decision and tool call, from the append-only audit log", renderActivity],
   authorities: ["Authorities", "Requests delivered to Halifax 311 and Nova Scotia Public Works", renderAuthorities],
   system: ["Trust & system", "Guardrails, privacy and the agent stack", renderSystem],
@@ -1176,6 +1178,175 @@ async function renderConditions() {
         <td>${x.report_ids.slice(0, 6).map((id) => `<a href="#/reports?id=${id}" class="mono small">#${id}</a>`).join(" ")}</td></tr>`).join("")}</tbody></table></div></div>`;
 }
 
+/* ---------- Pothole Risk Forecast (freeze-thaw heuristic) ---------- */
+const RISK = { high: ["High", "red", "H"], medium: ["Medium", "amber", "M"], low: ["Low", "green", "L"] };
+const RISK_COLORS = { high: "#f0616d", medium: "#ffb547", low: "#5bd18b" };
+const FACTOR_SHORT = { crack_severity: "Cracks", recent_freeze_thaw: "Past freeze-thaw", forecast_freeze_thaw: "Forecast freeze-thaw",
+  moisture: "Moisture", road_class: "Road class", pothole_history: "History" };
+const riskPill = (c, insufficient) => { const [t, tone] = RISK[c] || [c, ""]; return `<span class="pill ${tone}"><span class="dot"></span>${esc(t)}</span>${insufficient ? ` <span class="pill" title="Data quality below the minimum: never rated High">insufficient data</span>` : ""}`; };
+const damageText = (d) => Object.entries(d?.classes || {}).map(([c, n]) => `${esc(CLASS_LABELS[c] || c)}${n > 1 ? ` ×${n}` : ""}`).join(", ") || "–";
+const ftText = (f) => {
+  const past = f.recent_available ? `${f.recent_confirmed ?? 0} past${f.recent_potential ? ` (+${f.recent_potential} possible)` : ""}` : "past: no data";
+  const ahead = f.forecast_available ? `${f.forecast_potential ?? 0} forecast` : "forecast: no data";
+  return `${past} · ${ahead}`;
+};
+const whereText = (s) => s.municipality || (s.location && !s.location.startsWith("near ") ? s.location : "") || "Location unknown";
+
+function drawRiskMap(id, segs) {
+  const el = document.getElementById(id);
+  if (!el || !window.L) return;
+  const center = segs.length ? [segs[0].lat, segs[0].lon] : [44.6425, -63.578];
+  const m = L.map(el, { scrollWheelZoom: true }).setView(center, 14);
+  const tone = document.documentElement.dataset.theme === "light" ? "Light" : "Dark";
+  const esri = (layer) => `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_${tone}_Gray_${layer}/MapServer/tile/{z}/{y}/{x}`;
+  L.tileLayer(esri("Base"), { maxZoom: 19, maxNativeZoom: 16, attribution: "Tiles © Esri, HERE, Garmin, © OpenStreetMap contributors" }).addTo(m);
+  L.tileLayer(esri("Reference"), { maxZoom: 19, maxNativeZoom: 16 }).addTo(m);
+  // The letter and size carry the category as well as the colour, so it reads without colour vision
+  for (const s of segs) {
+    const [label, , letter] = RISK[s.category] || ["", "", "?"];
+    const size = s.category === "high" ? 26 : s.category === "medium" ? 22 : 18;
+    L.marker([s.lat, s.lon], { title: `${s.road_name}: ${label} risk`, icon: L.divIcon({ className: "", iconSize: [size, size],
+      html: `<span class="risk-pin risk-${esc(s.category)}" style="--c:${RISK_COLORS[s.category] || "#667085"};width:${size}px;height:${size}px">${letter}</span>` }) })
+      .bindPopup(`<b>${esc(s.road_name)}</b><br>${esc(label)} risk · score ${s.score.toFixed(2)}<br>${esc(damageText(s.existing_damage))}<br><a href="#/forecast?segment=${encodeURIComponent(s.segment_id)}">Open segment</a>`)
+      .addTo(m);
+  }
+  const pts = segs.map((s) => [s.lat, s.lon]);
+  if (pts.length > 1) m.fitBounds(pts, { padding: [30, 30], maxZoom: 16 });
+  maps.push(m);
+  setTimeout(() => m.invalidateSize(), 50);
+}
+
+async function renderForecast(params) {
+  const view = stage();
+  const seg = params.get("segment");
+  if (seg) return renderForecastSegment(seg);
+  const [f, ev, hist] = await Promise.all([api("/api/forecast"), api("/api/forecast/evaluation").catch(() => null), api("/api/forecast/history").catch(() => null)]);
+  const cat = params.get("risk") || "all", place = params.get("where") || "";
+  const all = f.segments || [];
+  const places = [...new Set(all.map(whereText))].sort();
+  const list = all.filter((s) => (cat === "all" || s.category === cat) && (!place || whereText(s) === place));
+  const run = f.run;
+  const runBtn = can("review") ? `<button class="btn btn-sm" id="fc-run">${icon("refresh")}Run forecast now</button>` : "";
+  const banner = `<div class="callout amber section-tight">${icon("alert")}<div><b>Heuristic estimate, not a validated prediction.</b> ${esc(f.disclaimer)} Weights: ${Object.entries(f.weights).map(([k, w]) => `${esc(FACTOR_SHORT[k] || k)} ${Math.round(w * 100)}%`).join(" · ")}.</div></div>`;
+  if (!run) {
+    view.innerHTML = `${banner}<div class="card">${emptyState("activity", "No forecast yet", "A forecast scores every road segment with crack sightings once trips produce them. The scheduler runs it every few hours.", runBtn)}</div>`;
+    bindForecastRun();
+    return;
+  }
+  const s = f.summary;
+  const weatherNote = { ok: "ECCC weather available", partial: "Some ECCC weather missing", unavailable: "ECCC weather unavailable", none: "No segments needed weather" }[run.weather_status] || run.weather_status;
+  view.innerHTML = `${banner}
+    <div class="grid kpis">
+      <div class="card kpi"><div class="label">Segments analysed<span class="ic blue">${icon("map")}</span></div><div class="value">${s.total}</div><div class="hint">Road segments with crack sightings</div></div>
+      <div class="card kpi"><div class="label">High risk<span class="ic red">${icon("alert")}</span></div><div class="value">${s.high}</div><div class="hint">Score ≥ ${f.thresholds.high}</div></div>
+      <div class="card kpi"><div class="label">Medium risk<span class="ic amber">${icon("activity")}</span></div><div class="value">${s.medium}</div><div class="hint">${s.insufficient_data ? `${s.insufficient_data} with insufficient data` : `Score ≥ ${f.thresholds.medium}`}</div></div>
+      <div class="card kpi"><div class="label">Low risk<span class="ic green">${icon("check")}</span></div><div class="value">${s.low}</div><div class="hint">Below ${f.thresholds.medium}</div></div>
+    </div>
+    <div class="card section"><div class="card-head"><h2>Forecast</h2><span class="desc">Generated ${esc(new Date(run.created_at).toLocaleString())} · next ${run.horizon_days} days (${esc(run.period_start)} to ${esc(run.period_end)}) · ${esc(weatherNote)}</span><span class="spacer"></span>${runBtn}</div>
+      <div class="card-body"><div class="toolbar" style="margin-bottom:12px">
+        <div class="tabs" role="group" aria-label="Filter by risk category">${["all", "high", "medium", "low"].map((c) => `<button type="button" aria-pressed="${c === cat}" class="${c === cat ? "on" : ""}" data-c="${c}">${c === "all" ? "All" : RISK[c][0]}<span class="n">${c === "all" ? all.length : s[c]}</span></button>`).join("")}</div>
+        <label class="small muted">Location <select class="input input-sm" id="fc-where"><option value="">All locations</option>${places.map((p) => `<option ${p === place ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></label>
+      </div>
+      <div class="legend" style="margin-bottom:8px">${Object.entries(RISK).map(([k, [t, , l]]) => `<span><span class="risk-pin risk-${k}" style="--c:${RISK_COLORS[k]};width:16px;height:16px;font-size:9px;vertical-align:middle;margin-right:6px">${l}</span>${t}</span>`).join("")}</div>
+      <div id="risk-map" class="map" style="height:360px;min-height:300px"></div></div>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Road segment</th><th>Location</th><th>Existing damage</th><th>Freeze-thaw days</th><th style="width:16%">Risk score</th><th>Category</th><th>Main factors</th></tr></thead><tbody>
+      ${list.length ? list.map((x) => `<tr class="click" data-seg="${esc(x.segment_id)}" tabindex="0"><td><b>${esc(x.road_name)}</b><div class="muted small mono">${esc(x.segment_id)}</div></td>
+        <td>${esc(whereText(x))}</td><td>${damageText(x.existing_damage)}<div class="muted small">${x.existing_damage.observations} sighting(s), ${x.existing_damage.trips} trip(s)</div></td>
+        <td class="small">${esc(ftText(x.freeze_thaw))}</td>
+        <td><div class="meter-row"><div class="meter"><span style="width:${Math.round(x.score * 100)}%" class="${RISK[x.category]?.[1] || ""}"></span></div><span class="mono small">${x.score.toFixed(2)}</span></div><div class="muted small">data quality ${pct(x.data_quality)}</div></td>
+        <td>${riskPill(x.category, x.insufficient_data)}</td>
+        <td class="small">${x.main_factors.map((m) => esc(FACTOR_SHORT[m.factor] || m.label)).join(", ") || "–"}</td></tr>`).join("")
+        : `<tr><td colspan="7">${emptyState("search", "No segments match", "Try another risk category or location.")}</td></tr>`}</tbody></table></div></div>
+    <div class="grid two section">
+      ${forecastEvaluationCard(ev)}
+      ${forecastHistoryCard(hist)}
+    </div>`;
+  $$(".tabs button", view).forEach((b) => b.onclick = () => location.hash = `#/forecast?risk=${b.dataset.c}${place ? `&where=${encodeURIComponent(place)}` : ""}`);
+  $("#fc-where", view).onchange = (e) => location.hash = `#/forecast?risk=${cat}${e.target.value ? `&where=${encodeURIComponent(e.target.value)}` : ""}`;
+  $$("tr[data-seg]", view).forEach((tr) => { const go = () => location.hash = `#/forecast?segment=${encodeURIComponent(tr.dataset.seg)}`; tr.onclick = go; tr.onkeydown = (e) => { if (e.key === "Enter") go(); }; });
+  bindForecastRun();
+  drawRiskMap("risk-map", list);
+}
+
+function forecastEvaluationCard(ev) {
+  if (!ev) return `<div class="card"><div class="card-head"><h2>How the forecast has done</h2></div><div class="card-body muted">Evaluation unavailable.</div></div>`;
+  const fact = (k, v) => `<div class="fact"><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`;
+  return `<div class="card"><div class="card-head"><h2>How the forecast has done</h2><span class="spacer"></span>${ev.validated ? `<span class="pill green">${ev.with_outcome} outcomes</span>` : `<span class="pill amber">not validated</span>`}</div><div class="card-body">
+    ${ev.message ? `<div class="callout blue section-tight">${icon("alert")}<div>${esc(ev.message)}</div></div>` : ""}
+    <div class="facts">${fact("High-risk predictions", ev.high_predictions)}${fact("Potholes that developed", ev.confirmed_potholes)}${fact("High and confirmed", ev.high_confirmed)}
+      ${fact("False alarms", ev.false_alarms)}${fact("Missed", ev.missed)}${fact("No trip passed", ev.not_observed)}${fact("Still in period", ev.pending)}
+      ${fact("Precision (High)", ev.validated && ev.high_precision != null ? pct(ev.high_precision) : "<span class=\"muted\">not yet</span>")}</div>
+    ${(ev.runs || []).length > 1 ? `<h3 class="h3" style="margin-top:14px">By run</h3><div class="table-wrap"><table class="table"><thead><tr><th>Run</th><th>Kind</th><th>High</th><th>Confirmed</th><th>False alarms</th><th>Missed</th></tr></thead><tbody>${ev.runs.slice(0, 8).map((r) => `<tr><td class="mono small">#${r.run_id} · ${esc(new Date(r.created_at).toLocaleDateString())}</td><td>${esc(r.kind)}</td><td>${r.high_predictions}</td><td>${r.high_confirmed}</td><td>${r.false_alarms}</td><td>${r.missed}</td></tr>`).join("")}</tbody></table></div>` : ""}
+  </div></div>`;
+}
+
+function forecastHistoryCard(h) {
+  if (!h) return `<div class="card"><div class="card-head"><h2>Deterioration history</h2></div><div class="card-body muted">History unavailable.</div></div>`;
+  return `<div class="card"><div class="card-head"><h2>Deterioration history</h2><span class="spacer"></span>${h.sufficient ? `<span class="pill green">enough data</span>` : `<span class="pill amber">insufficient data</span>`}</div><div class="card-body">
+    ${h.message ? `<div class="callout blue section-tight">${icon("alert")}<div>${esc(h.message)}</div></div>` : ""}
+    <div class="facts"><div class="fact"><div class="k">Segments</div><div class="v">${h.segments}</div></div>
+      <div class="fact"><div class="k">Seen on 2+ trips</div><div class="v">${h.segments_seen_on_2_or_more_trips}</div></div>
+      <div class="fact"><div class="k">Crack → pothole</div><div class="v">${h.crack_to_pothole_pairs}</div></div>
+      <div class="fact"><div class="k">Median days</div><div class="v">${h.sufficient && h.median_days_crack_to_pothole != null ? h.median_days_crack_to_pothole : "–"}</div></div></div>
+  </div></div>`;
+}
+
+function bindForecastRun() {
+  const b = $("#fc-run");
+  if (!b) return;
+  b.onclick = async () => {
+    b.disabled = true; b.innerHTML = `${icon("refresh", "spin")}Running…`;
+    try {
+      const job = await api("/api/forecast/run?force=true", { method: "POST" });
+      if (job.status === "failed") throw new Error(job.error || "forecast failed");
+      toast(job.status === "done" ? `Forecast updated: ${job.result?.segments ?? 0} segment(s)` : "Forecast queued");
+      router();
+    } catch (e) { toast(e.message, false); b.disabled = false; b.innerHTML = `${icon("refresh")}Run forecast now`; }
+  };
+}
+
+async function renderForecastSegment(id) {
+  const view = stage();
+  const d = await api(`/api/forecast/segments/${encodeURIComponent(id)}`);
+  const s = d.segment, p = d.prediction, det = d.deterioration;
+  $("#crumb-current").textContent = `Pothole risk / ${s.road_name}`;
+  const back = `<a href="#/forecast" class="btn btn-ghost btn-sm" style="margin-left:-10px">${icon("arrow", "flip")}All segments</a>`;
+  const factorRow = (f) => `<tr><td><b>${esc(f.label)}</b><div class="muted small">${esc(Object.entries(f.raw || {}).filter(([k, v]) => v !== null && typeof v !== "object" && k !== "start" && k !== "end").map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(" · "))}</div></td>
+    <td class="mono">${f.available ? f.value.toFixed(2) : `<span class="muted">no data</span>`}</td><td class="mono">${pct(f.weight)}</td><td class="mono">${f.contribution.toFixed(3)}</td><td class="mono">${pct(f.coverage)}</td></tr>`;
+  const wx = [...(d.weather || [])].reverse().map((w) => `<tr><td class="mono small nowrap">${esc(w.date)}<div class="muted">${esc(w.kind)}</div></td><td class="mono">${w.t_min ?? "–"}</td><td class="mono">${w.t_max ?? "–"}</td>
+    <td class="mono small">${w.precip_mm != null ? `${w.precip_mm} mm` : w.precip_chance != null ? `${w.precip_chance}%` : w.precip_expected ? "expected" : "–"}${w.snow_cm ? ` · ${w.snow_cm} cm snow` : ""}</td>
+    <td>${w.status === "confirmed" ? `<span class="pill red">freeze-thaw</span>` : w.status === "potential" ? `<span class="pill amber">possible</span>` : w.status === "missing" ? `<span class="pill">no data</span>` : `<span class="muted small">none</span>`}</td></tr>`).join("");
+  view.innerHTML = `${back}
+    <div class="callout amber section-tight" style="margin-top:8px">${icon("alert")}<div>${esc(d.disclaimer)}</div></div>
+    <div class="card"><div class="card-head"><h2>${esc(s.road_name)} <span class="muted mono small">${esc(s.id)}</span></h2>${p ? riskPill(p.category, p.insufficient_data) : ""}<span class="spacer"></span><span class="muted small">${esc(whereText(s))} · ${esc(s.road_class || "road class unknown")}</span></div>
+      <div class="card-body">
+        ${p ? `<div class="callout blue section-tight">${icon("sparkle")}<div><b>Why:</b> ${esc(p.explanation)}</div></div>
+        <div class="facts"><div class="fact"><div class="k">Risk score</div><div class="v">${p.score.toFixed(2)}</div></div><div class="fact"><div class="k">Data quality</div><div class="v">${pct(p.data_quality)}</div></div>
+          <div class="fact"><div class="k">Period</div><div class="v small">${esc(p.period_start)} → ${esc(p.period_end)}</div></div><div class="fact"><div class="k">Predicted</div><div class="v small">${esc(new Date(p.predicted_at).toLocaleString())}</div></div></div>
+        <h3 class="h3" style="margin-top:16px">Contributing factors</h3>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Factor</th><th>Value (0–1)</th><th>Weight</th><th>Contribution</th><th>Data coverage</th></tr></thead><tbody>${p.factors.map(factorRow).join("")}</tbody></table></div>
+        <h3 class="h3" style="margin-top:16px">Data sources</h3><ul class="small">${Object.entries(p.data_sources).map(([k, v]) => `<li><b>${esc(k.replace(/_/g, " "))}:</b> ${esc(v)}</li>`).join("")}</ul>` : `<div class="muted">No live prediction for this segment yet.</div>`}
+      </div></div>
+    <div class="grid two section">
+      <div class="card"><div class="card-head"><h2>Crack and pothole sightings</h2><span class="desc">${det ? `${det.observations} sighting(s) on ${det.trips} trip(s)` : ""}</span></div><div class="card-body">
+        ${det ? `<div class="facts section-tight"><div class="fact"><div class="k">First crack</div><div class="v small">${det.first_crack_at ? esc(new Date(det.first_crack_at).toLocaleDateString()) : "–"}</div></div>
+          <div class="fact"><div class="k">First pothole</div><div class="v small">${det.first_pothole_at ? esc(new Date(det.first_pothole_at).toLocaleDateString()) : "none seen"}</div></div>
+          <div class="fact"><div class="k">Crack → pothole</div><div class="v">${det.days_crack_to_pothole != null ? `${det.days_crack_to_pothole} days` : "–"}</div></div>
+          <div class="fact"><div class="k">Class changes</div><div class="v small">${det.class_changes.map((c) => esc(c.class_code)).join(" → ")}</div></div></div>
+          ${det.sufficient ? "" : `<div class="callout blue section-tight">${icon("alert")}<div>Seen on one trip only: there is no deterioration trend to show yet.</div></div>`}` : ""}
+        <ul class="feed">${(d.events || []).map((e) => `<li><img src="/api/media/${encodeURIComponent(e.id)}.jpg" alt="Privacy-blurred frame of ${esc(CLASS_LABELS[e.class_code] || e.class_code)}" loading="lazy" style="width:88px;height:56px;object-fit:cover;border-radius:6px;flex:none" onerror="this.style.visibility='hidden'">
+          <div style="flex:1;min-width:0"><b>${esc(CLASS_LABELS[e.class_code] || e.class_code)}</b> <span class="muted small">confidence ${Number(e.confidence).toFixed(2)}</span>
+          <div class="muted small">${esc(new Date(e.captured_at).toLocaleString())} · trip ${esc(e.trip_id)}${e.report_id ? ` · <a href="#/reports?id=${e.report_id}">report #${e.report_id}</a>` : ""}</div></div></li>`).join("")}</ul>
+      </div></div>
+      <div class="card"><div class="card-head"><h2>Weather (ECCC)</h2><span class="desc">Forecast and station records, newest first</span></div><div class="card-body flush">
+        ${wx ? `<div class="table-wrap" style="max-height:420px;overflow:auto"><table class="table compact"><thead><tr><th>Date</th><th>Min °C</th><th>Max °C</th><th>Precip.</th><th>Freeze/thaw</th></tr></thead><tbody>${wx}</tbody></table></div>`
+          : `<div class="card-body">${emptyState("cloud", "No weather data stored", "ECCC data was unavailable for this segment; nothing was estimated in its place.")}</div>`}
+      </div></div>
+    </div>
+    ${(d.history || []).length ? `<div class="card section"><div class="card-head"><h2>Earlier predictions and outcomes</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>Predicted</th><th>Kind</th><th>Category</th><th>Score</th><th>Period</th><th>Outcome</th></tr></thead><tbody>
+      ${d.history.map((h) => `<tr><td class="small">${esc(new Date(h.predicted_at).toLocaleString())}</td><td>${esc(h.run_kind)}</td><td>${riskPill(h.category)}</td><td class="mono">${h.score.toFixed(2)}</td><td class="small">${esc(h.period_start)} → ${esc(h.period_end)}</td><td>${esc((h.outcome || "pending").replace(/_/g, " "))}</td></tr>`).join("")}</tbody></table></div></div>` : ""}`;
+}
+
 /* ---------- Users (admin) ---------- */
 async function renderUsers() {
   const view = stage();
@@ -1347,7 +1518,7 @@ const palette = {
   el: $("#palette"), q: $("#palette-q"), list: $("#palette-list"), pending: [], items: [], sel: 0, opener: null,
   commands() {
     const nav = [["overview", "grid"], ["trips", "video"], ["review", "inbox"], ["reports", "file"], ["map", "map"],
-      ["conditions", "activity"], ["activity", "activity"], ["authorities", "building"], ["system", "shield"],
+      ["conditions", "activity"], ["forecast", "alert"], ["activity", "activity"], ["authorities", "building"], ["system", "shield"],
       ...(can("admin") ? [["users", "user"]] : [])]
       .map(([r, ic]) => ({ group: "Go to", label: ROUTES[r][0], hint: ROUTES[r][1], icon: ic, run: () => (location.hash = `#/${r}`) }));
     const acts = [
