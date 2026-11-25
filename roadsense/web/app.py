@@ -166,6 +166,26 @@ def conditions():
     return agent("GET", "/conditions")
 
 
+@app.get("/api/forecast")
+def forecast():
+    return agent("GET", "/forecast")
+
+
+@app.get("/api/forecast/segments/{segment_id}")
+def forecast_segment(segment_id: str):
+    return agent("GET", f"/forecast/segments/{segment_id}")
+
+
+@app.get("/api/forecast/evaluation")
+def forecast_evaluation(kind: str | None = None):
+    return agent("GET", "/forecast/evaluation", params={"kind": kind} if kind else None)
+
+
+@app.get("/api/forecast/history")
+def forecast_history():
+    return agent("GET", "/forecast/history")
+
+
 @app.get("/api/external")
 def external(source: str | None = None):
     return agent("GET", "/external", params={"source": source} if source else None)
@@ -240,6 +260,11 @@ def process(trip_id: str, request: Request):
 @app.post("/api/follow-up")
 def follow_up(request: Request):
     return agent("POST", "/follow-up", need(request, "review"), timeout=300)
+
+
+@app.post("/api/forecast/run")
+def forecast_run(request: Request, force: bool = False):
+    return agent("POST", "/forecast/run", need(request, "review"), params={"force": force}, timeout=180)
 
 
 @app.post("/api/external/sync")

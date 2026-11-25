@@ -30,7 +30,7 @@ from ..common.db import REPORT_STATUSES, audit, now, row, session
 from ..common.metrics import install as install_metrics
 from ..common.metrics import metrics
 from ..common.schemas import DamageEvent
-from ..core import condition, external, geo, impact, media, open311, privacy, reports
+from ..core import condition, external, forecast, geo, impact, media, open311, privacy, reports
 from .jobs import Worker
 
 log = logging.getLogger("roadsense.api")
@@ -410,6 +410,45 @@ def conditions():
 def deterioration(report_id: int):
     with session() as conn:
         return condition.deterioration(conn, report_id)
+
+
+# ---------- freeze-thaw pothole forecast (heuristic) ----------
+@app.get("/forecast", dependencies=AUTH)
+def forecast_latest():
+    """Latest pothole-risk forecast per road segment, with its factors, sources and the heuristic disclaimer."""
+    with session() as conn:
+        return forecast.latest(conn)
+
+
+@app.get("/forecast/segments/{segment_id}", dependencies=AUTH)
+def forecast_segment(segment_id: str):
+    with session() as conn:
+        detail = forecast.segment_detail(conn, segment_id)
+    if detail is None:
+        raise HTTPException(404, "no such road segment")
+    return detail
+
+
+@app.get("/forecast/evaluation", dependencies=AUTH)
+def forecast_evaluation(kind: str | None = None):
+    if kind not in (None, "live", "backtest"):
+        raise HTTPException(400, "kind must be live or backtest")
+    with session() as conn:
+        return forecast.evaluation_summary(conn, kind)
+
+
+@app.get("/forecast/history", dependencies=AUTH)
+def forecast_history():
+    with session() as conn:
+        return forecast.history(conn)
+
+
+@app.post("/forecast/run", dependencies=AUTH)
+async def forecast_run(force: bool = False, wait: bool = True, who: Actor = Depends(actor)):
+    """Queue a forecast run on the job worker (the same path the scheduler uses)."""
+    who.need(REVIEW_ROLES)
+    job_id = worker.submit("forecast_potholes", actor=who.name, force=force)
+    return await worker.wait(job_id, 120) if wait else {"job_id": job_id, "status": "queued"}
 
 
 # ---------- city requests and third-party feeds ----------

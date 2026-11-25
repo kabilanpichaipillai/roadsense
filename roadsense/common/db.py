@@ -125,6 +125,124 @@ CREATE TABLE IF NOT EXISTS labels (
     actor TEXT NOT NULL,
     ts TEXT NOT NULL
 );
+-- ---- freeze-thaw pothole forecast ----
+CREATE INDEX IF NOT EXISTS events_class_time ON events (class_code, captured_at);
+CREATE TABLE IF NOT EXISTS road_segments (
+    id TEXT PRIMARY KEY,
+    road_name TEXT NOT NULL,
+    road_class TEXT,
+    municipality TEXT,
+    location TEXT,
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    first_seen TEXT,
+    last_seen TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS segment_events (
+    segment_id TEXT NOT NULL REFERENCES road_segments (id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+    PRIMARY KEY (event_id)
+);
+CREATE INDEX IF NOT EXISTS segment_events_segment ON segment_events (segment_id);
+CREATE TABLE IF NOT EXISTS weather_daily (
+    cell TEXT NOT NULL,
+    date TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    station_id TEXT,
+    station_name TEXT,
+    t_min REAL,
+    t_max REAL,
+    t_mean REAL,
+    precip_mm REAL,
+    snow_cm REAL,
+    precip_chance REAL,
+    precip_expected INTEGER,
+    source TEXT NOT NULL,
+    issued_at TEXT,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (cell, date, kind)
+);
+CREATE TABLE IF NOT EXISTS weather_fetches (
+    cell TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    range_start TEXT,
+    range_end TEXT,
+    ok INTEGER NOT NULL,
+    error TEXT,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (cell, kind)
+);
+CREATE TABLE IF NOT EXISTS forecast_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL DEFAULT 'live',
+    model_kind TEXT NOT NULL DEFAULT 'heuristic',
+    as_of TEXT NOT NULL,
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    horizon_days INTEGER NOT NULL,
+    config_hash TEXT NOT NULL,
+    inputs_hash TEXT NOT NULL,
+    segments INTEGER NOT NULL DEFAULT 0,
+    weather_status TEXT,
+    actor TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS forecast_runs_kind ON forecast_runs (kind, created_at);
+CREATE TABLE IF NOT EXISTS freeze_thaw_indicators (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES forecast_runs (id) ON DELETE CASCADE,
+    segment_id TEXT NOT NULL REFERENCES road_segments (id) ON DELETE CASCADE,
+    span TEXT NOT NULL,
+    window_start TEXT NOT NULL,
+    window_end TEXT NOT NULL,
+    days INTEGER NOT NULL,
+    confirmed_cycles INTEGER NOT NULL,
+    potential_cycles INTEGER NOT NULL,
+    missing_days INTEGER NOT NULL,
+    wet_days INTEGER NOT NULL,
+    moist_cycles INTEGER NOT NULL,
+    source TEXT,
+    computed_at TEXT NOT NULL,
+    UNIQUE (run_id, segment_id, span)
+);
+CREATE TABLE IF NOT EXISTS risk_predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES forecast_runs (id) ON DELETE CASCADE,
+    segment_id TEXT NOT NULL REFERENCES road_segments (id) ON DELETE CASCADE,
+    run_kind TEXT NOT NULL DEFAULT 'live',
+    score REAL NOT NULL,
+    category TEXT NOT NULL,
+    data_quality REAL NOT NULL,
+    insufficient_data INTEGER NOT NULL DEFAULT 0,
+    explanation TEXT NOT NULL,
+    data_sources TEXT NOT NULL,
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    horizon_days INTEGER NOT NULL,
+    config_hash TEXT NOT NULL,
+    predicted_at TEXT NOT NULL,
+    UNIQUE (segment_id, period_start, horizon_days, config_hash, run_kind)
+);
+CREATE INDEX IF NOT EXISTS risk_predictions_run ON risk_predictions (run_id, category);
+CREATE TABLE IF NOT EXISTS prediction_factors (
+    prediction_id INTEGER NOT NULL REFERENCES risk_predictions (id) ON DELETE CASCADE,
+    factor TEXT NOT NULL,
+    raw TEXT,
+    value REAL,
+    weight REAL NOT NULL,
+    contribution REAL NOT NULL,
+    coverage REAL NOT NULL,
+    available INTEGER NOT NULL,
+    PRIMARY KEY (prediction_id, factor)
+);
+CREATE TABLE IF NOT EXISTS prediction_outcomes (
+    prediction_id INTEGER PRIMARY KEY REFERENCES risk_predictions (id) ON DELETE CASCADE,
+    outcome TEXT NOT NULL,
+    evidence_event_id TEXT,
+    observed_at TEXT,
+    evaluated_at TEXT NOT NULL
+);
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
 BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
