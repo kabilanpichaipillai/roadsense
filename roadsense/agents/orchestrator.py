@@ -185,6 +185,14 @@ async def _drafts(toolbox: Toolbox, judge: Judge, report_ids: list[int]) -> int:
     return saved
 
 
+def _repair_passes(trip_id: str) -> dict:
+    """Independent repair verification from the frames this trip kept of closed reports. Plain code: thresholds."""
+    from ..core import repair
+
+    with session() as conn:
+        return repair.check_passes(conn, trip_id)
+
+
 async def process_trip(toolbox: Toolbox, trip_id: str, use_llm: bool = True) -> dict:
     """Verify, locate, triage and draft every new event of a trip. Returns a summary and run metrics."""
     started = time.perf_counter()
@@ -193,7 +201,7 @@ async def process_trip(toolbox: Toolbox, trip_id: str, use_llm: bool = True) -> 
             "SELECT id, class_code, class_name, confidence, frames_seen, box_area_ratio, lat, lon, width_m "
             "FROM events WHERE trip_id = ? AND status = 'received'", (trip_id,))]
     if not events:
-        return {"trip_id": trip_id, "summary": "No new events.", "mode": "none"}
+        return {"trip_id": trip_id, "summary": "No new events.", "mode": "none", "repair": _repair_passes(trip_id)}
 
     judge = Judge(use_llm)
     _audit("agent:orchestrator", "task", f"trip:{trip_id}", f"{len(events)} new detection(s)")
@@ -211,6 +219,7 @@ async def process_trip(toolbox: Toolbox, trip_id: str, use_llm: bool = True) -> 
     drafted = await _drafts(toolbox, judge, created)
 
     repaired = await fallback.complete_trip(toolbox, trip_id)  # safety net: finish anything left undone
+    repair_checks = _repair_passes(trip_id)  # after triage: a re-detection in this trip has already reopened its report
     with session() as conn:
         counts = dict(conn.execute("SELECT status, COUNT(*) FROM events WHERE trip_id = ? GROUP BY status",
                                    (trip_id,)).fetchall())
@@ -220,7 +229,8 @@ async def process_trip(toolbox: Toolbox, trip_id: str, use_llm: bool = True) -> 
         mode, stats = ("agents (interrupted)" if judge.interrupted else "agents"), judge.llm.stats()
     result = {"trip_id": trip_id, "summary": fallback.trip_summary(trip_id), "mode": mode, "events": counts,
               "drafted": drafted, "fallback_events": repaired, "fallback_rate": round(repaired / len(events), 2),
-              "seconds": round(time.perf_counter() - started, 1), "llm": stats}
+              "seconds": round(time.perf_counter() - started, 1), "llm": stats,
+              "repair": repair_checks}
     _audit("agent:orchestrator", "trip_done", f"trip:{trip_id}", result)
     return result
 

@@ -29,8 +29,8 @@ from ..common.config import settings
 from ..common.db import REPORT_STATUSES, audit, now, row, session
 from ..common.metrics import install as install_metrics
 from ..common.metrics import metrics
-from ..common.schemas import DamageEvent
-from ..core import condition, external, forecast, geo, impact, media, open311, privacy, reports
+from ..common.schemas import DamageEvent, RoadPass
+from ..core import condition, external, forecast, geo, impact, media, open311, privacy, repair, reports
 from .jobs import Worker
 
 log = logging.getLogger("roadsense.api")
@@ -175,6 +175,46 @@ async def receive_event(event: str = Form(...), image: UploadFile = File(...)):
     return {"accepted": e.id}
 
 
+@app.get("/verification/watchlist", dependencies=AUTH)
+def verification_watchlist():
+    """Closed reports awaiting an independent re-observation: what the edge keeps a frame of when it passes."""
+    with session() as conn:
+        return repair.watchlist(conn)
+
+
+@app.post("/passes", dependencies=AUTH)
+async def receive_pass(road_pass: str = Form(...), image: UploadFile = File(...)):
+    """A frame of a watched spot (repair verification). Stored and redaction-checked like an event photo."""
+    try:
+        p = RoadPass.model_validate_json(road_pass)
+    except ValidationError as err:
+        raise HTTPException(422, json.loads(err.json())) from err
+    data = await image.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES or not data.startswith(b"\xff\xd8"):
+        raise HTTPException(415, "image must be a JPEG under 5 MB")
+    with session() as conn:
+        if conn.execute("SELECT 1 FROM road_passes WHERE id = ?", (p.id,)).fetchone():
+            return {"accepted": p.id, "duplicate": True}
+    settings.media_dir.mkdir(parents=True, exist_ok=True)
+    path = settings.media_dir / f"pass-{p.id}.jpg"
+    path.write_bytes(data)
+    redaction = privacy.server_redact(path, p.box) if settings.server_redaction else {"checked": False}
+    with session() as conn:
+        conn.execute("INSERT INTO road_passes (id, trip_id, report_id, lat, lon, heading, captured_at, image_path, box,"
+                     " sharpness, brightness, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (p.id, p.trip_id, p.report_id, p.lat, p.lon, p.heading, p.captured_at.isoformat(), str(path),
+                      json.dumps(p.box), p.sharpness, p.brightness, now()))
+        audit(conn, "edge", "pass_received", f"pass:{p.id}", {"trip": p.trip_id, "report": p.report_id,
+                                                               "redaction": redaction})
+    return {"accepted": p.id}
+
+
+@app.get("/verification", dependencies=AUTH)
+def verification_metrics():
+    with session() as conn:
+        return repair.metrics(conn)
+
+
 @app.post("/trips/{trip_id}/process", dependencies=AUTH)
 async def process_trip(trip_id: str, wait: bool = True, timeout: float = 600, who: Actor = Depends(actor)):
     job_id = worker.submit("process_trip", actor=who.name, trip_id=trip_id)
@@ -245,6 +285,8 @@ def stats():
             "fallback_rate": round(sum(t.get("fallback_events", 0) for t in trips) /
                                    max(sum(sum((t.get("events") or {}).values()) for t in trips), 1), 3),
         }
+    with session() as conn:
+        out["repair_verification"] = repair.metrics(conn)
     out["impact"] = impact.estimate(out, settings.cost_per_contact, settings.minutes_per_contact)
     return out
 
@@ -280,10 +322,12 @@ def report_detail(report_id: int):
         matches = [{k: x[k] for k in ("id", "source", "kind", "status", "reported_at", "description")}
                    for x in conn.execute("SELECT * FROM external_requests WHERE report_id = ?", (report_id,))]
         trend = condition.deterioration(conn, report_id)
+        verification = repair.summary(conn, r)
     r.pop("approved_payload", None)
+    r["lifecycle"] = repair.lifecycle(r)
     p = open311.build_payload(r)
     return {"report": r, "events": events, "trail": trail, "payload": p, "payload_hash": open311.payload_hash(p),
-            "deliveries": deliveries, "external": matches, "deterioration": trend}
+            "deliveries": deliveries, "external": matches, "deterioration": trend, "verification": verification}
 
 
 @app.get("/trips/{trip_id}/reports", dependencies=AUTH)
@@ -300,7 +344,7 @@ def list_reports(status: str | None = None):
         raise HTTPException(400, f"status must be one of {REPORT_STATUSES}")
     with session() as conn:
         sql = "SELECT * FROM reports" + (" WHERE status = ?" if status else "") + " ORDER BY priority DESC"
-        return [{k: v for k, v in dict(r).items() if k != "approved_payload"}
+        return [{**{k: v for k, v in dict(r).items() if k != "approved_payload"}, "lifecycle": repair.lifecycle(dict(r))}
                 for r in conn.execute(sql, (status,) if status else ())]
 
 
@@ -508,6 +552,17 @@ def media_file(event_id: str, exp: int | None = None, sig: str | None = None, au
     if not (media.verify(event_id, exp, sig) or secrets.compare_digest(authorization, f"Bearer {settings.api_token}")):
         raise HTTPException(403, "link expired or invalid")
     path = settings.media_dir / f"{event_id}.jpg"
+    if not path.is_file():
+        raise HTTPException(404, "not found")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.get("/passes/{pass_id}.jpg", dependencies=AUTH)
+def pass_file(pass_id: str):
+    """A repair-verification frame (service token only: it is not sent to the authority)."""
+    if not pass_id.replace("-", "").replace("_", "").isalnum():
+        raise HTTPException(400, "bad id")
+    path = settings.media_dir / f"pass-{pass_id}.jpg"
     if not path.is_file():
         raise HTTPException(404, "not found")
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})

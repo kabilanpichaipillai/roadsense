@@ -73,3 +73,14 @@ jobs:
           done
           echo "The site did not answer within 5 minutes" >&2
           exit 1
+
+      - name: Check the 311 inbox
+        run: |
+          # "Mark fixed" must reach the mock (303); filing from outside must be refused (403). Request 0 never exists.
+          INBOX="${ROADSENSE_URL/https:\/\//https://311.}"
+          close=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$INBOX/admin/requests/0/close")
+          file=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$INBOX/requests.json")
+          echo "close: $close, outside filing: $file"
+          [ "$close" = 303 ] && [ "$file" = 403 ]
+        env:
+          ROADSENSE_URL: ${{ vars.ROADSENSE_URL }}

@@ -201,6 +201,13 @@ def create_or_merge(conn: sqlite3.Connection, event_id: str, severity: str, addr
         raise ValueError("severity must be low, medium or high")
     ts = now()
 
+    # the same defect as a report the authority closed: evidence for (or against) the repair, not a new report
+    from . import repair
+
+    seen_again = repair.check_redetection(conn, event, road_name, actor)
+    if seen_again:
+        return seen_again
+
     # a defect a reviewer rejected is not proposed again on every trip: the sighting is recorded against it
     rejected = _recently_rejected(conn, event, radius_m,
                                   settings.rejected_suppress_days if suppress_days is None else suppress_days)
@@ -267,6 +274,10 @@ def set_status(conn: sqlite3.Connection, report_id: int, status: str, actor: str
                  [status, now(), *[v for k, v in fields.items() if k in STATUS_FIELDS], report_id])
     audit(conn, actor, f"status_{status}", f"report:{report_id}",
           {k: v for k, v in fields.items() if k in STATUS_FIELDS and k not in AUDIT_SKIP} or None)
+    if status == "fixed":  # the authority's closure is kept as is; RoadSense now waits to see the spot again
+        from . import repair
+
+        repair.mark_awaiting(conn, report_id, actor)
     return row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
 
 

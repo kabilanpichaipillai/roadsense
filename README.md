@@ -69,9 +69,30 @@ outside the candidates, is dropped and the rule decides. If the model becomes un
 | **New report or another sighting of a known one?** | Open reports of the same class within 15 m of the projected position | Merging is idempotent; confirmations raise priority |
 | **What the authority is told** | Report facts: class, width band, severity, confirmations, address | Text is sanitised, and locked by hash once the driver approves |
 | **Is it fixed?** | Authority status feed | Notifies each driver once |
+| **Is it really fixed?** | Later trips past a closed report: the defect detected again, or clean frames of the spot | The authority's status is kept; RoadSense reopens on a confident re-detection and verifies only after clean passes from 2 different trips. Blurred, dark, out-of-view or weak evidence is inconclusive |
 
 The fallback that completes any skipped step is a circuit breaker, not the engine: its use is counted and reported
 per trip as the fallback rate.
+
+### Independent repair verification
+
+An authority closing a request does not prove the pothole was filled. When the follow-up feed (or the city's own
+request layer) closes a report, RoadSense keeps that status as "Closed" and marks the report **awaiting
+verification**. Later trips re-observe it (`roadsense/core/repair.py`):
+
+- **Seen again**: a verified detection of a compatible class within `ROADSENSE_REPAIR_MATCH_RADIUS_M` (15 m), on the
+  same road, captured after the closure. At or above `ROADSENSE_REPAIR_REDETECT_CONFIDENCE` (0.5) the repair is
+  **not verified** and the report is **Reopened**, with the reason and the new photo. Below it, the result is
+  **inconclusive**. The sighting is attached to the closed report instead of opening a duplicate.
+- **Not seen**: the edge downloads a watchlist of closed reports and keeps one privacy-blurred frame of each spot it
+  passes (`roadsense/edge/reobserve.py`). A frame counts as a clean pass only when it is sharp, lit, shows the spot
+  4-25 m ahead within 35° of the heading, and that trip detected nothing of that class there. The repair is
+  **verified** after `ROADSENSE_REPAIR_MIN_CLEAN_PASSES` (2) clean passes from different trips. One miss is not proof.
+
+Every attempt is stored once in an append-only history (`repair_verifications`) with a SHA-256 evidence hash and
+audit events. The report page shows the original and latest follow-up photos side by side. The overview shows the
+**Repair Verification Rate** = verified ÷ (verified + reopened) × 100. Closed reports nobody has driven past yet, and
+those with only inconclusive frames, are counted separately and never as failed repairs.
 
 ## Measured results
 
@@ -266,7 +287,7 @@ INCOMPLETE after an upgrade, re-record with `--record`. Browse the result with `
 ## Evidence
 
 ```bash
-python scripts/check.py                                   # ruff + 122 tests + pip-audit (no known vulnerabilities)
+python scripts/check.py                                   # ruff + 139 tests + pip-audit (no known vulnerabilities)
 python scripts/eval_verifier.py --split <RDD>/val --tune  # choose the verification rule on validation data
 python scripts/eval_verifier.py --split <RDD>/test        # report it once on test
 python scripts/eval_agents.py [--llm]                     # 42 decision scenarios end to end

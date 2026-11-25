@@ -128,7 +128,10 @@ def purge(conn: sqlite3.Connection, now_ts: float | None = None) -> dict:
             out["rejected_media"] += 1
     cur = conn.execute("UPDATE events SET car_lat = NULL, car_lon = NULL WHERE car_lat IS NOT NULL AND created_at < ?",
                        (cutoff(settings.car_position_days),))
-    out["car_positions"] = cur.rowcount
+    # repair-verification frames: the car position is only needed until the trip is checked
+    cur2 = conn.execute("UPDATE road_passes SET lat = NULL, lon = NULL, heading = NULL "
+                        "WHERE lat IS NOT NULL AND created_at < ?", (cutoff(settings.car_position_days),))
+    out["car_positions"] = cur.rowcount + cur2.rowcount
     if any(out.values()):
         audit(conn, "retention", "purge", None, json.dumps(out))
     return out

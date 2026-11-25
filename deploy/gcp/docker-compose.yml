@@ -8,6 +8,9 @@ services:
     env_file: .env
     environment:
       ROADSENSE_OPEN311_INBOX_URL: https://311.${SITE_HOST}
+      # the demo's 311 is the mock in this container: look for repairs every minute, so a request marked repaired
+      # in the inbox shows as fixed in the app almost at once (a real city's feed keeps the 60-minute default)
+      ROADSENSE_FOLLOW_UP_MINUTES: "1"
     expose: ["7860", "8000", "8311"]
     volumes:
       - roadsense-data:/app/data
