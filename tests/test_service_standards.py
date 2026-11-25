@@ -412,3 +412,15 @@ def test_web_app_requires_sign_in_for_service_standards():
 
 def test_now_is_timezone_aware():
     assert datetime.fromisoformat(ss.now()).tzinfo == timezone.utc
+
+
+def test_repair_verification_outcomes_are_ledger_evidence(db):
+    rid = filed()["report_id"]
+    with session() as conn:
+        ss.observe_authority(conn, rid, "closed", "Repaired", "mcp:municipality", "authority:open311")
+        entry = ss.note_repair_check(conn, rid, "repair_not_verified", "verify:repair", "pothole seen again",
+                                     "event:ev-later")
+        c = ss.get_clock(conn, rid)
+        assert ledger.verify(conn, rid)["ok"]
+    assert entry["event_type"] == "repair_not_verified" and "event:ev-later" in entry["note"]
+    assert c["stage"] == "closed"  # RoadSense's own check never rewrites what the authority reported

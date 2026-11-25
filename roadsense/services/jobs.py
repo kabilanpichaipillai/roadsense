@@ -10,6 +10,8 @@ The scheduler (one tick a minute) queues the work nobody clicks for:
     follow_up          status checks at the authority (every ROADSENSE_FOLLOW_UP_MINUTES)
     sync_city          the city's own service requests from its open-data layer (ROADSENSE_EXTERNAL_SYNC_MINUTES)
     purge              the retention policy (hourly)
+    forecast_potholes  freeze-thaw pothole risk per road segment, then outcomes of earlier forecasts
+                       (every ROADSENSE_FORECAST_MINUTES; skips itself when no detections or weather changed)
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ from ..common.db import now, session
 from ..common.metrics import metrics
 
 log = logging.getLogger("roadsense.jobs")
-SCHEDULED = ("retry_deliveries", "push_updates", "follow_up", "sync_city", "purge")
+SCHEDULED = ("retry_deliveries", "push_updates", "follow_up", "sync_city", "purge", "forecast_potholes")
 
 
 def _decode(r) -> dict:
@@ -110,6 +112,8 @@ class Worker:
         periods = {"follow_up": settings.follow_up_minutes * 60, "purge": 3600}
         if settings.city_sr_layer_url:
             periods["sync_city"] = settings.external_sync_minutes * 60
+        if settings.forecast_enabled:
+            periods["forecast_potholes"] = settings.forecast_minutes * 60
         for kind, period in periods.items():
             if period > 0 and now_s - self.last_run.get(kind, 0) >= period:
                 due.append(kind)
@@ -124,7 +128,7 @@ class Worker:
     # ---- execution ----
     async def execute(self, job: dict):
         from ..agents import orchestrator
-        from ..core import external, privacy
+        from ..core import external, forecast, privacy
         from ..mcp_servers import municipality_server
 
         kind, args, use_llm = job["kind"], job["args"] or {}, settings.llm_enabled
@@ -157,6 +161,11 @@ class Worker:
         if kind == "purge":
             with session() as conn:
                 return privacy.purge(conn)
+        if kind == "forecast_potholes":
+            with session() as conn:
+                result = forecast.run_forecast(conn, force=bool(args.get("force")), actor=job.get("actor") or "scheduler")
+                result["outcomes"] = forecast.evaluate_outcomes(conn)
+                return result
         raise ValueError(f"unknown job kind {kind!r}")
 
     def recover(self) -> int:

@@ -11,7 +11,8 @@ settle legal liability; the dashboard says so.
                (rule_snapshot, rule_hash) and the deadlines are computed once; a trigger refuses later changes, so
                editing a rule never moves an existing report's deadlines
     events     report_submitted, acknowledged, inspection_started, repair_started, repair_completed, report_closed,
-               report_reopened (+ authority_status_changed, deadline_approaching, deadline_passed, standard_verified),
+               report_reopened (+ authority_status_changed, deadline_approaching, deadline_passed, standard_verified,
+               repair_verified, repair_not_verified from RoadSense's own repair check),
                each written to the hash-chained ledger (core.ledger)
     status     compliance() turns a clock into one tracking status at a given moment (STATUS_RULES below)
 
@@ -422,6 +423,19 @@ def record_event(conn: sqlite3.Connection, report_id: int, event_type: str, acto
                  [*updates.values(), report_id])
     return _ledger(conn, {**clock, **updates}, event_type, actor, source, previous=prev, at=at, before=before,
                    note=note)
+
+
+def note_repair_check(conn: sqlite3.Connection, report_id: int, outcome: str, actor: str, reason: str,
+                      evidence: str | None = None) -> dict | None:
+    """RoadSense's own repair verification (core.repair) as ledger evidence: `repair_verified` or
+    `repair_not_verified` (the damage was seen again after the authority closed the report). The authority-driven
+    lifecycle stage and deadlines are untouched: only the authority, or a reviewer recording it, reopens a request."""
+    clock = get_clock(conn, report_id)
+    if clock is None or outcome not in ("repair_verified", "repair_not_verified"):
+        return None
+    note = f"{reason} (evidence: {evidence})" if evidence else reason
+    return _ledger(conn, clock, outcome, actor, "roadsense:repair_verification", previous=clock["stage"],
+                   before=compliance(clock), note=note[:500])
 
 
 def _has(text: str, words: list[str]) -> bool:

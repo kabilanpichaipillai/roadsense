@@ -166,6 +166,26 @@ def conditions():
     return agent("GET", "/conditions")
 
 
+@app.get("/api/forecast")
+def forecast():
+    return agent("GET", "/forecast")
+
+
+@app.get("/api/forecast/segments/{segment_id}")
+def forecast_segment(segment_id: str):
+    return agent("GET", f"/forecast/segments/{segment_id}")
+
+
+@app.get("/api/forecast/evaluation")
+def forecast_evaluation(kind: str | None = None):
+    return agent("GET", "/forecast/evaluation", params={"kind": kind} if kind else None)
+
+
+@app.get("/api/forecast/history")
+def forecast_history():
+    return agent("GET", "/forecast/history")
+
+
 @app.get("/api/external")
 def external(source: str | None = None):
     return agent("GET", "/external", params={"source": source} if source else None)
@@ -292,6 +312,11 @@ def follow_up(request: Request):
     return agent("POST", "/follow-up", need(request, "review"), timeout=300)
 
 
+@app.post("/api/forecast/run")
+def forecast_run(request: Request, force: bool = False):
+    return agent("POST", "/forecast/run", need(request, "review"), params={"force": force}, timeout=180)
+
+
 @app.post("/api/external/sync")
 def external_sync(request: Request):
     return agent("POST", "/external/sync", need(request, "admin"), timeout=120)
@@ -306,6 +331,19 @@ def web_metrics(request: Request):
 
 
 # ---------- media ----------
+@app.get("/api/media/pass/{pass_id}.jpg")
+def pass_media(pass_id: str):
+    """A repair-verification frame with the watched road region outlined."""
+    if not pass_id.replace("-", "").replace("_", "").isalnum():
+        raise HTTPException(400, "bad id")
+    frame = cv2.imread(str(settings.media_dir / f"pass-{pass_id}.jpg"))
+    if frame is None:
+        raise HTTPException(404, "not found")
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return Response(buf.tobytes(), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+
+
+
 @app.get("/api/media/{event_id}.jpg")
 def media(event_id: str, crop: bool = False):
     """The privacy-redacted frame with the detection drawn on it (optionally cropped around the damage)."""
@@ -348,8 +386,12 @@ def _run_trip(job: dict, video: Path, gps: Path | None, user: dict):
         with _gpu:
             step("edge", 0.0, "Loading the YOLOv8m edge detector")
             gps = gps or _simulated_gps(video, video.with_suffix(".gpx"))
+            try:  # closed reports to re-observe on the way (repair verification); none if the API is down
+                watch = agent("GET", "/verification/watchlist")
+            except HTTPException:
+                watch = []
             stats = process_video(video, gps, job["trip_id"], detector=edge_detector(),
-                                  progress=lambda f, msg: step("edge", f, msg))
+                                  progress=lambda f, msg: step("edge", f, msg), watch=watch)
         job["edge"] = stats
         # the raw video and GPS track are no longer needed: only privacy-blurred frames leave this step
         job["raw_deleted"] = delete_trip_raw(video.parent)

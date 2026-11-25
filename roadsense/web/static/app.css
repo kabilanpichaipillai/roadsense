@@ -1170,3 +1170,23 @@ dialog.sheet { width: min(520px, calc(100vw - 32px)); }
 
 /* service standards: an overdue deadline reads red without colour alone ("late" is in the text) */
 .late { color: var(--red-text); font-weight: 600; }
+/* ---------- Pothole Risk Forecast ---------- */
+svg.flip { transform: scaleX(-1); }
+.risk-pin { display: inline-grid; place-items: center; border-radius: 50%; background: var(--c); color: #111;
+  font: 700 11px/1 var(--mono); border: 2px solid var(--bg); box-shadow: 0 1px 4px rgb(0 0 0 / .35); }
+.risk-pin.risk-high { border-radius: 4px; transform: rotate(45deg); }   /* shape differs too, not only colour */
+.risk-pin.risk-high { font-size: 0; }
+.risk-pin.risk-high::after { content: "H"; font-size: 11px; transform: rotate(-45deg); }
+.table.compact th, .table.compact td { padding: 7px 10px; }
+.table .nowrap { white-space: nowrap; }
+
+/* ---------- repair verification: before and after ---------- */
+.ba { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-5); margin-top: var(--space-4); }
+@media (min-width: 760px) { .ba { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.ba-side { margin: 0; min-width: 0; }
+.ba-empty { display: flex; gap: 8px; align-items: center; justify-content: center; aspect-ratio: 16 / 9;
+  border: 1px dashed currentColor; border-radius: 12px; padding: 16px; text-align: center; opacity: .8; }
+.ba-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 10px 0 0; font-size: .9em; }
+.ba-facts dt { opacity: .7; }
+.ba-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.ba-hist { margin-top: var(--space-4); max-width: 100%; overflow-x: auto; }

@@ -41,3 +41,20 @@ class DamageEvent(BaseModel):
         if v not in CODES:
             raise ValueError(f"unknown damage class {v!r}")
         return v
+
+
+class RoadPass(BaseModel):
+    """One redacted frame the edge kept where it drove past a closed report on the watchlist (repair verification).
+    Only sent for watched spots, never as a track. lat/lon/heading are the car's at that frame."""
+
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{6,80}$")
+    trip_id: str = Field(pattern=r"^[A-Za-z0-9_-]{3,64}$")
+    report_id: int | None = Field(default=None, ge=1)
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    heading: float | None = Field(default=None, ge=0, lt=360)
+    captured_at: datetime
+    # the road region where the defect should be (kept sharp; everything else is blurred)
+    box: list[int] = Field(min_length=4, max_length=4)
+    sharpness: float = Field(ge=0, le=1e6)
+    brightness: float = Field(ge=0, le=255)
