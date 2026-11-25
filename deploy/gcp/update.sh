@@ -13,5 +13,8 @@ sudo rm -rf roadsense scripts demo
 sudo tar -xzf "$BUNDLE" -C /opt/roadsense
 rm -f "$BUNDLE"
 sudo docker compose up -d --build --remove-orphans
+# Caddy keeps the Caddyfile it started with (the bind mount follows the old file, which tar replaced): recreate it.
+# Its certificates live in the caddy-data volume, so this is a few seconds' pause, not a new certificate.
+sudo docker compose up -d --force-recreate --no-deps caddy
 sudo docker image prune -f >/dev/null
 echo "Running revision $(cat REVISION)"

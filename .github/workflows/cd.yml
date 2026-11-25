@@ -56,7 +56,12 @@ jobs:
 
       - name: Copy to the VM and rebuild
         run: |
-          gcloud compute scp roadsense.tgz deploy/gcp/update.sh "$VM": $GCLOUD_FLAGS --ssh-key-expire-after=30m
+          # a just-made SSH key can take a few seconds to reach the VM ("Permission denied (publickey)"): retry the copy
+          for i in 1 2 3 4; do
+            gcloud compute scp roadsense.tgz deploy/gcp/update.sh "$VM": $GCLOUD_FLAGS --ssh-key-expire-after=30m && break
+            [ "$i" = 4 ] && exit 1
+            echo "Copy failed, retrying in 20 s ($i/3)"; sleep 20
+          done
           gcloud compute ssh "$VM" $GCLOUD_FLAGS --ssh-key-expire-after=30m \
             --command 'sh ~/update.sh ~/roadsense.tgz; status=$?; rm -f ~/update.sh; exit $status'
 
