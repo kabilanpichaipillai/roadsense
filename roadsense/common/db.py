@@ -438,9 +438,14 @@ MIGRATIONS = {
                 # repair_target_days is no longer written: service standards are the one deadline source
                 "repair_target_days": "INTEGER", "road_class": "TEXT", "road_name": "TEXT",
                 "pending_update": "INTEGER NOT NULL DEFAULT 0",
-                # independent repair verification, kept apart from the authority's status (status = 'fixed')
+                # independent repair verification, kept apart from the crew's claim (status = 'repaired')
                 "closed_at": "TEXT", "verification_status": "TEXT", "verification_updated_at": "TEXT",
-                "reopened_at": "TEXT", "reopen_reason": "TEXT", "reopen_event_id": "TEXT"},
+                "reopened_at": "TEXT", "reopen_reason": "TEXT", "reopen_event_id": "TEXT",
+                # the municipal repair workflow (core.workflow): inspection, repair date, repair, reopen
+                "inspector_id": "INTEGER", "inspection_assigned_at": "TEXT", "inspected_at": "TEXT",
+                "inspection_notes": "TEXT", "inspection_photo": "TEXT", "repair_eta": "TEXT", "repaired_at": "TEXT",
+                "repaired_by": "TEXT", "repair_photo": "TEXT", "repair_notes": "TEXT", "closed_reason": "TEXT",
+                "reopen_count": "INTEGER NOT NULL DEFAULT 0"},
     # duty-of-care ledger rows (core.ledger) are audit rows with a SHA-256 hash chained per report
     "audit": {"prev_hash": "TEXT", "hash": "TEXT"},
 }
@@ -450,8 +455,10 @@ CREATE INDEX IF NOT EXISTS audit_subject ON audit (subject, id);
 CREATE UNIQUE INDEX IF NOT EXISTS audit_chain ON audit (subject, prev_hash) WHERE hash IS NOT NULL;
 """
 
-REPORT_STATUSES = ("pending_approval", "approved", "rejected", "submitted", "fixed", "delivery_failed")
-# RoadSense's own repair check after the authority closes a report (reports.verification_status)
+# the municipal workflow's statuses; core.workflow holds the transitions and is the only writer of reports.status
+REPORT_STATUSES = ("pending_approval", "awaiting_inspection", "inspection_assigned", "repair_needed", "repaired",
+                   "reopened", "closed")
+# RoadSense's own repair check after a repair is marked done (reports.verification_status)
 VERIFICATION_STATUSES = ("awaiting", "verified", "reopened")
 EVENT_STATUSES = ("received", "checked", "verified", "rejected", "processed")
 
@@ -475,6 +482,7 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
     conn.executescript(POST_MIGRATION)
     conn.execute("CREATE INDEX IF NOT EXISTS reports_verification ON reports (status, verification_status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS reports_inspector ON reports (inspector_id, status)")
     return conn
 
 

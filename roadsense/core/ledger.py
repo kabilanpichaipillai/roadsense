@@ -39,14 +39,15 @@ def head(conn: sqlite3.Connection, subject: str) -> str:
     return r[0] if r else GENESIS
 
 
-def append(conn: sqlite3.Connection, report_id: int, event_type: str, actor: str, detail: dict) -> dict:
+def append(conn: sqlite3.Connection, report_id: int, event_type: str, actor: str, detail: dict,
+           ts: str | None = None) -> dict:
     """Add one entry to a report's chain. Takes the write lock first, so two processes cannot both extend the same
     head (the unique index would refuse the second one anyway)."""
     if not conn.in_transaction:
         conn.execute("BEGIN IMMEDIATE")
     subject = f"report:{report_id}"
     prev = head(conn, subject)
-    ts = now()
+    ts = ts or now()
     action = PREFIX + event_type
     text = json.dumps(detail, sort_keys=True, default=str)  # stored exactly as hashed: never truncated
     digest = entry_hash(ts, actor, action, subject, text, prev)
