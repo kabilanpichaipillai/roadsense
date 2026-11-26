@@ -424,3 +424,52 @@ def test_repair_verification_outcomes_are_ledger_evidence(db):
         assert ledger.verify(conn, rid)["ok"]
     assert entry["event_type"] == "repair_not_verified" and "event:ev-later" in entry["note"]
     assert c["stage"] == "closed"  # RoadSense's own check never rewrites what the authority reported
+
+
+# ---------------- one deadline source ----------------
+def test_the_repair_target_is_the_service_standard(db):
+    unfiled = filed(band="S4", start=False)
+    with session() as conn:
+        conn.execute("UPDATE reports SET status = 'pending_approval' WHERE id = ?", (unfiled["id"],))
+        before = ss.target(conn, unfiled)
+    assert before["source"] == "applicable rule" and before["completion_days"] == 7 and not before["usable"]
+    approve_rules()
+    clock = filed(band="S4")
+    with session() as conn:
+        t = ss.target(conn, {"id": clock["report_id"]})
+    assert t["source"] == "filed" and t["usable"] and t["completion_due"] == clock["completion_due"]
+    assert t["completion_days"] == json.loads(clock["rule_snapshot"])["completion_days"]
+
+
+def test_the_authority_payload_carries_no_roadsense_deadline(db):
+    r = filed(band="S4", start=False)
+    payload = open311.build_payload(r)
+    assert "repair_target_days" not in payload["attributes"] and payload["attributes"]["severity_band"] == "S4"
+
+
+def test_report_page_shows_the_service_standard_target(db):
+    from roadsense.services import agent_api
+
+    r = filed(band="S4", start=False)
+    d = TestClient(agent_api.app).get(f"/reports/{r['id']}", headers=AUTH).json()
+    assert "repair_target_days" not in d["report"] and d["report"]["service_target"]["completion_days"] == 7
+
+
+def test_reclassifying_recomputes_the_band_and_level(db):
+    add_event("ev-rc1", 44.7, -63.58, code="D20", area=0.07)
+    with session() as conn:
+        r = reports.create_or_merge(conn, "ev-rc1", "medium", "x", HRM, 15, jurisdiction=HRM, band="S4")["report"]
+        assert r["severity"] == "high"  # the passed level is ignored: the band names it
+        r = reports.reclassify(conn, r["id"], "D00", "reviewer@roadsense.test")
+    assert (r["severity_band"], r["severity"]) == ("S2", "medium")  # a line crack is never urgent
+
+
+def test_old_contradictory_levels_are_fixed_only_before_review(db):
+    pending, sent = filed(band="S4", start=False), filed(band="S4", start=False)
+    with session() as conn:
+        conn.execute("UPDATE reports SET status = 'pending_approval', severity = 'medium' WHERE id = ?",
+                     (pending["id"],))
+        conn.execute("UPDATE reports SET severity = 'medium' WHERE id = ?", (sent["id"],))  # already submitted
+        assert reports.normalise_severity(conn) == 1
+        levels = dict(conn.execute("SELECT id, severity FROM reports WHERE id IN (?, ?)", (pending["id"], sent["id"])))
+    assert levels == {pending["id"]: "high", sent["id"]: "medium"}  # what the authority received is not rewritten

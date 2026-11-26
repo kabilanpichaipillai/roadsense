@@ -76,8 +76,9 @@ work; no prompt leaves the allow-list.
 | Referral by email (NS Public Works) | `"channel": "referral"`, `referral_email`; `ROADSENSE_SMTP_*` | an inbox that accepts referrals |
 
 Copy `roadsense/core/municipalities.json`, edit it, and point `ROADSENSE_AUTHORITIES_FILE` at the copy. The `_rules`
-block holds the region's routing and triage rules (provincial routes, Priority 1 width, severity bands, repair
-targets by road class), so another region is a new file, not a code change. Validate field names against the city's
+block holds the region's routing and triage rules (provincial routes and severity bands), so another region is a
+new file, not a code change. Repair and response targets are not in this file: they come only from the service-standard
+rules that admins manage on the **Service standards** page ([docs/service-standards.md](service-standards.md)). Validate field names against the city's
 test instance before switching a channel; the adapters are tested against the vendors' published API shapes, not
 against HRM's instance.
 

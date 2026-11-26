@@ -59,6 +59,8 @@ worker = Worker()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.media_dir.mkdir(parents=True, exist_ok=True)
+    with session() as conn:  # one severity scale: correct reports awaiting review that predate it
+        reports.normalise_severity(conn)
     task = asyncio.create_task(worker.run())
     yield
     task.cancel()
@@ -340,8 +342,11 @@ def report_detail(report_id: int):
         trend = condition.deterioration(conn, report_id)
         verification = repair.summary(conn, r)
         risk = exposure.detail(conn, report_id)
+        target = service_standards.target(conn, r)
     r.pop("approved_payload", None)
+    r.pop("repair_target_days", None)  # superseded by the service-standard target (one deadline source)
     r["lifecycle"] = repair.lifecycle(r)
+    r["service_target"] = target
     p = open311.build_payload(r)
     return {"report": r, "events": events, "trail": trail, "payload": p, "payload_hash": open311.payload_hash(p),
             "deliveries": deliveries, "external": matches, "deterioration": trend, "verification": verification,

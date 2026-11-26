@@ -325,7 +325,7 @@ INCOMPLETE after an upgrade, re-record with `--record`. Browse the result with `
 ## Evidence
 
 ```bash
-python scripts/check.py                                   # ruff + 256 tests + pip-audit (no known vulnerabilities)
+python scripts/check.py                                   # ruff + 269 tests + pip-audit (no known vulnerabilities)
 python scripts/eval_verifier.py --split <RDD>/val --tune  # choose the verification rule on validation data
 python scripts/eval_verifier.py --split <RDD>/test        # report it once on test
 python scripts/eval_agents.py [--llm]                     # 42 decision scenarios end to end
@@ -359,7 +359,7 @@ scripts/        run_all, check, run_forecast, eval_verifier, eval_agents, smoke_
 
 Done in the production-readiness pass: sign-in and roles, durable jobs and a scheduler, delivery retries and updates,
 Cityworks/ArcGIS/email adapters, city-request sync, signed media, server-side redaction check, retention, data
-residency enforcement, cross-class dedupe and rejection suppression, severity bands and repair targets, segment
+residency enforcement, cross-class dedupe and rejection suppression, severity bands, segment
 condition estimate, deterioration trends, third-party feed ingest, ground-truth label export, CI, pinned versions.
 
 Next:

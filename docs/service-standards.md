@@ -48,6 +48,15 @@ acknowledgement and sets `acknowledged_at`. Repeated polls with no change add no
 
 ## Service-standard rules
 
+These rules are RoadSense's **only** deadline source. The "Repair target" on a report page is the completion target
+of the rule that applies to it: frozen from its service clock once filed, otherwise the rule that would apply if it
+were filed today, marked *unverified* until an admin verifies or approves the rule. RoadSense does not send a repair
+deadline to the authority.
+
+Severity is one scale too: the **severity band** (S1 minor to S4 urgent, from estimated width or area, capped at S2
+when the detector is unsure). The low/medium/high wording in reports and in the authority's description is only the
+band's name (S1 low, S2 medium, S3–S4 high), so the words and the band that selects the rule never disagree.
+
 The rules live in the `service_standards` table and are managed by admins on **Service standards**. The values are not
 hardcoded in code. Each rule has an authority and a jurisdiction label. It can optionally be narrowed by road category
 (OSM road class), damage category (D00/D10/D20/D40) and priority (severity band S1–S4). It also has a response target

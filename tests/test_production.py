@@ -69,7 +69,7 @@ def test_rule_severity_and_map_jurisdiction_win_over_the_agent(db):
     with session() as conn:
         r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (out["report_id"],)).fetchone())
         actions = {a for (a,) in conn.execute("SELECT action FROM audit")}
-    assert r["severity"] == "medium" and r["jurisdiction"] == "Nova Scotia Public Works"
+    assert (r["severity"], r["severity_band"]) == ("low", "S1") and r["jurisdiction"] == "Nova Scotia Public Works"
     assert {"severity_disagreement", "jurisdiction_overridden"} <= actions
 
 
@@ -94,11 +94,11 @@ def test_residency_refuses_foreign_and_free_llms():
         object.__setattr__(settings, "residency_llm_hosts", [])
 
 
-def test_severity_band_and_repair_target():
+def test_severity_band():
     assert reports.severity_band("D40", 0.30, 0.01) == "S3"
     assert reports.severity_band("D40", 0.30, 0.01, jolt_g=0.8) == "S4"  # an IMU jolt corroborates depth
     assert reports.severity_band("D00", None, 0.5) == "S2"                 # a line crack is never urgent
-    assert reports.repair_target_days("S4", "motorway") == 4 and reports.repair_target_days("S2", "residential") == 30
+    assert not hasattr(reports, "repair_target_days")  # deadlines come only from the service standards
 
 
 # ---------------- delivery ----------------
