@@ -349,7 +349,8 @@ input[type="file"]::file-selector-button { font: inherit; font-weight: 550; heig
 /* Reject and Approve wrap together and stay on the right */
 /* the decision buttons share one size: equal columns as wide as the longest label */
 .actionbar-btns { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 10px; margin-left: auto; flex: none; }
-.actionbar-btns .btn { justify-content: center; }
+.actionbar-btns .btn { justify-content: center; height: 38px; padding: 0 16px; }
+.actionbar-btns .btn-danger { border-color: var(--red-border); }
 
 /* ---------- trip upload ---------- */
 .dropzone { display: grid; place-items: center; gap: 6px; text-align: center; padding: 40px 20px; border-radius: var(--radius-lg);
@@ -465,7 +466,7 @@ details.tool pre { margin: 0; padding: 10px; font-size: 11.5px; white-space: pre
   .funnel .stage .delta, .funnel .stage .rate { display: none; }
   .actionbar { flex-wrap: wrap; }
   .actionbar > .muted { display: none; }
-  .actionbar .btn-lg { flex: 1; min-width: 0; height: auto; min-height: 44px; padding-block: 8px; white-space: normal; line-height: 1.25; }
+  .actionbar .btn-lg, .actionbar-btns .btn { flex: 1; min-width: 0; height: auto; min-height: 40px; padding-block: 8px; white-space: normal; line-height: 1.25; }
   .actionbar-btns { flex: 1 1 100%; min-width: 0; }
   .payload dl { grid-template-columns: 1fr; }
   .payload dt { border-bottom: 0; padding-bottom: 2px; }

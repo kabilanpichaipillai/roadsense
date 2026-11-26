@@ -768,7 +768,7 @@ function reportDetail(d) {
     ${riskCard(d.risk)}
     ${(d.deliveries || []).length ? `<div class="card-body" style="padding-top:0"><h3 class="h3">Deliveries</h3><ul class="feed">${d.deliveries.map((x) => `<li>${avatar(x.ok ? "agent:filing" : "fallback")}<div style="flex:1;min-width:0"><span class="what">${esc(x.kind === "update" ? "Update" : "Submission")} via ${esc(CHANNELS[x.channel] || x.channel || "?")}</span> ${x.ok ? `<span class="pill green">ok</span>` : `<span class="pill red">failed</span>`}<div class="why">${esc(x.detail || "")}</div></div><span class="when">${ago(x.ts)}</span></li>`).join("")}</ul></div>` : ""}
     ${pending && review ? `<div class="actionbar"><span class="review-pos" id="review-pos" hidden></span><span class="muted small"><span class="kbd">J</span>/<span class="kbd">K</span> next/previous. Deciding always needs a click.</span><span class="spacer"></span>
-      <div class="actionbar-btns"><button class="btn btn-danger btn-lg" id="reject">${icon("x")}Reject</button><button class="btn btn-primary btn-lg" id="approve">${icon(elsewhere ? "send" : "check")}${elsewhere ? `Approve &amp; refer to ${esc(authority(r.jurisdiction))}` : "Approve for inspection"}</button></div></div>` : ""}
+      <div class="actionbar-btns"><button class="btn btn-danger" id="reject">${icon("x")}Reject</button><button class="btn btn-primary" id="approve">${icon(elsewhere ? "send" : "check")}${elsewhere ? `Approve &amp; refer to ${esc(authority(r.jurisdiction))}` : "Approve for inspection"}</button></div></div>` : ""}
     ${pending && !review ? `<div class="actionbar"><span class="muted small">${icon("lock")} Only reviewers can approve or reject reports. You are signed in as ${esc(session.user?.role || "")}.</span></div>` : ""}`;
 }
 
@@ -1367,7 +1367,10 @@ async function renderSystem() {
   const h = s.health, llm = s.llm || {};
   const servers = {};
   h.mcp_tools.forEach((t) => (servers[t.split("_")[0]] ||= []).push(t));
-  const NAMES = { detector: "Vision · detector MCP", geo: "Location · geo MCP", reports: "Triage · reports MCP", city: "Filing · municipality MCP" };
+  const NAMES = { detector: "Vision · detector MCP", geo: "Location · geo MCP", reports: "Triage · reports MCP", city: "Referral · municipality MCP" };
+  // the referral server stays connected, but with forwarding off every send is refused: say so instead of implying use
+  const NOTES = { city: s.deployment?.workflow?.forwarding ? "Refers approved reports on roads another authority owns, and tracks them."
+    : "Not used: forwarding is off, so it refuses every send. Reports stay in RoadSense from review to repair." };
   const guard = (t, d, ok = true) => `<li class="${ok ? "" : "is-warn"}">${icon(ok ? "check" : "alert")}<div><b>${t}</b><div class="muted small">${d}</div></div></li>`;
   const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d/;
   const label = (k) => { const t = k.replace(/_/g, " "); return t[0].toUpperCase() + t.slice(1); };
@@ -1414,7 +1417,7 @@ async function renderSystem() {
       <div class="card"><div class="card-head"><h2>Jobs and scheduler</h2><span class="spacer"></span>${dep.scheduler?.enabled ? `<span class="pill green"><span class="dot"></span>Scheduler on</span>` : `<span class="pill amber">Scheduler off</span>`}</div><div class="card-body facts">${kv(dep.jobs, " jobs")}${kv(dep.scheduler?.last_run, " last run")}<div class="fact"><div class="k">Sign-in</div><div class="v small">${s.auth?.enabled ? (s.auth.sso ? "SSO + password" : "Password") : "Disabled"}</div></div></div></div>
     </div>
     <div class="card section"><div class="card-head"><h2>MCP servers and tools</h2><span class="spacer"></span><span class="muted small">${h.mcp_tools.length} tools over stdio</span></div>
-      <div class="card-body grid kpis">${Object.entries(servers).map(([k, tools]) => `<div class="server-card"><div class="name">${icon("layers")}${esc(NAMES[k] || k)}<span class="spacer"></span><span class="faint small">${tools.length}</span></div><div class="chip-row">${tools.map((t) => `<span class="pill mono">${esc(t)}</span>`).join("")}</div></div>`).join("")}</div></div>`;
+      <div class="card-body grid kpis">${Object.entries(servers).map(([k, tools]) => `<div class="server-card"><div class="name">${icon("layers")}${esc(NAMES[k] || k)}<span class="spacer"></span><span class="faint small">${tools.length}</span></div>${NOTES[k] ? `<div class="muted small" style="margin:6px 0 8px">${esc(NOTES[k])}</div>` : ""}<div class="chip-row">${tools.map((t) => `<span class="pill mono">${esc(t)}</span>`).join("")}</div></div>`).join("")}</div></div>`;
   const sync = $("#sync-city");
   if (sync) sync.onclick = async () => {
     sync.disabled = true;
