@@ -347,7 +347,9 @@ input[type="file"]::file-selector-button { font: inherit; font-weight: 550; heig
 .actionbar > .muted { flex: 1 1 190px; min-width: 0; }
 .actionbar .btn { flex: none; }
 /* Reject and Approve wrap together and stay on the right */
-.actionbar-btns { display: flex; gap: 10px; margin-left: auto; flex: none; }
+/* the decision buttons share one size: equal columns as wide as the longest label */
+.actionbar-btns { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 10px; margin-left: auto; flex: none; }
+.actionbar-btns .btn { justify-content: center; }
 
 /* ---------- trip upload ---------- */
 .dropzone { display: grid; place-items: center; gap: 6px; text-align: center; padding: 40px 20px; border-radius: var(--radius-lg);

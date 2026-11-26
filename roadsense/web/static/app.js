@@ -768,7 +768,7 @@ function reportDetail(d) {
     ${riskCard(d.risk)}
     ${(d.deliveries || []).length ? `<div class="card-body" style="padding-top:0"><h3 class="h3">Deliveries</h3><ul class="feed">${d.deliveries.map((x) => `<li>${avatar(x.ok ? "agent:filing" : "fallback")}<div style="flex:1;min-width:0"><span class="what">${esc(x.kind === "update" ? "Update" : "Submission")} via ${esc(CHANNELS[x.channel] || x.channel || "?")}</span> ${x.ok ? `<span class="pill green">ok</span>` : `<span class="pill red">failed</span>`}<div class="why">${esc(x.detail || "")}</div></div><span class="when">${ago(x.ts)}</span></li>`).join("")}</ul></div>` : ""}
     ${pending && review ? `<div class="actionbar"><span class="review-pos" id="review-pos" hidden></span><span class="muted small"><span class="kbd">J</span>/<span class="kbd">K</span> next/previous. Deciding always needs a click.</span><span class="spacer"></span>
-      <div class="actionbar-btns"><button class="btn btn-danger" id="reject">${icon("x")}Reject</button><button class="btn btn-primary btn-lg" id="approve">${icon(elsewhere ? "send" : "check")}${elsewhere ? `Approve &amp; refer to ${esc(authority(r.jurisdiction))}` : "Approve for inspection"}</button></div></div>` : ""}
+      <div class="actionbar-btns"><button class="btn btn-danger btn-lg" id="reject">${icon("x")}Reject</button><button class="btn btn-primary btn-lg" id="approve">${icon(elsewhere ? "send" : "check")}${elsewhere ? `Approve &amp; refer to ${esc(authority(r.jurisdiction))}` : "Approve for inspection"}</button></div></div>` : ""}
     ${pending && !review ? `<div class="actionbar"><span class="muted small">${icon("lock")} Only reviewers can approve or reject reports. You are signed in as ${esc(session.user?.role || "")}.</span></div>` : ""}`;
 }
 
