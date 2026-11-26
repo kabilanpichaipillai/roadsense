@@ -188,7 +188,6 @@ const ROUTES = {
   reports: ["Reports", "Every defect, merged across drivers", renderReports],
   map: ["Map", "Reports on the road network", renderMap],
   conditions: ["Road condition", "Segment-level condition estimate from open defects (not a certified survey)", renderConditions],
-  risk: ["Exposure risk", "Damage severity weighted by who uses the road nearby (an infrastructure proxy, not traffic counts)", renderRisk],
   activity: ["Agent activity", "Every plan, decision and tool call, from the append-only audit log", renderActivity],
   standards: ["Service standards", "Filed reports against each authority's published service standard, with a tamper-evident history", renderStandards],
   authorities: ["Authorities", "Requests delivered to Halifax 311 and Nova Scotia Public Works", renderAuthorities],
@@ -199,8 +198,9 @@ const ROUTES = {
 async function router() {
   const [path, qs] = location.hash.replace(/^#\/?/, "").split("?");
   if (riskModal.dlg?.open) riskModal.dlg.close();
-  // Pothole Risk is a workspace over the Map, not a page: old #/forecast links land on the Map with it open
-  if (path === "forecast") { riskModal.pending = qs || ""; location.replace("#/map"); return; }
+  // Pothole Risk and Exposure Risk are workspaces over the Map, not pages: old links land on the Map with one open
+  const ws = workspaceFor(path);
+  if (ws) { riskModal.pending = { kind: ws, qs: qs || "" }; location.replace("#/map"); return; }
   const route = ROUTES[path] && (path !== "users" || can("admin")) ? path : "overview";
   const params = new URLSearchParams(qs || "");
   maps.forEach((m) => m.remove()); maps = [];
@@ -220,7 +220,7 @@ async function router() {
   const mine = current;
   try { await render(params); } catch (e) { mine.innerHTML = errorState(e); }
   if (mine === current) { document.body.classList.remove("loading"); animateView(mine); }
-  if (route === "map" && mine === current && riskModal.pending != null) { const q = riskModal.pending; riskModal.pending = null; openRiskModal(q); }
+  if (route === "map" && mine === current && riskModal.pending) { const { kind, qs: q } = riskModal.pending; riskModal.pending = null; openRiskModal(kind, q); }
   refreshChrome();
 }
 const SKELETON = `<div class="card card-body sk-page" aria-busy="true" aria-label="Loading"><div class="skeleton" style="width:22%;height:22px"></div><div class="skeleton" style="width:58%;margin-top:16px"></div><div class="skeleton" style="width:46%;margin-top:10px"></div></div>
@@ -507,11 +507,15 @@ async function renderMap(params) {
     <div class="toolbar">
       <div class="tabs" role="group" aria-label="Show reports by status">${["all", "pending_approval", "submitted", "fixed"].map((s) => `<button type="button" aria-pressed="${s === filter}" class="${s === filter ? "on" : ""}" data-s="${s}">${s === "all" ? "All" : STATUS[s][0]}<span class="n">${count(s)}</span></button>`).join("")}</div>
       <span class="spacer"></span>
-      <button type="button" class="btn" id="open-risk" aria-haspopup="dialog" aria-controls="risk-modal">${icon("risk")}Pothole Risk</button>
+      <div class="map-workspaces">
+        <button type="button" class="btn" id="open-exposure" aria-haspopup="dialog" aria-controls="risk-modal">${icon("alert")}Exposure Risk</button>
+        <button type="button" class="btn" id="open-risk" aria-haspopup="dialog" aria-controls="risk-modal">${icon("risk")}Pothole Risk</button>
+      </div>
     </div>
     <div class="card"><div class="card-head"><div class="legend">${Object.entries(MAP_COLORS).map(([k, c]) => `<span><i style="background:${c}"></i>${STATUS[k][0]}</span>`).join("")}</div><span class="spacer"></span><span class="desc">Marker size = number of drivers</span></div><div id="big-map" class="map"></div></div>`;
   $$(".tabs button").forEach((b) => b.onclick = () => location.hash = `#/map?status=${b.dataset.s}`);
-  $("#open-risk", view).onclick = () => openRiskModal();
+  $("#open-exposure", view).onclick = () => openRiskModal("exposure");
+  $("#open-risk", view).onclick = () => openRiskModal("forecast");
   drawMap("big-map", list);
 }
 
@@ -1515,11 +1519,15 @@ async function renderForecastSegment(id) {
       ${d.history.map((h) => `<tr><td class="small">${esc(new Date(h.predicted_at).toLocaleString())}</td><td>${esc(h.run_kind)}</td><td>${riskPill(h.category)}</td><td class="mono">${h.score.toFixed(2)}</td><td class="small">${esc(h.period_start)} → ${esc(h.period_end)}</td><td>${esc((h.outcome || "pending").replace(/_/g, " "))}</td></tr>`).join("")}</tbody></table></div></div>` : ""}`;
 }
 
-/* ---------- Pothole Risk workspace: a modal over the Map, never a page of its own ----------
-   The forecast renders into the modal and moves within it (filters, segment detail) without touching the URL, so the Map
-   underneath stays mounted. The native <dialog> makes the page behind inert, traps focus and closes on Esc. */
-const RISK_PAGE = ["Pothole Risk Forecast", "Where cracks may turn into potholes after freeze-thaw (heuristic, not validated)"];
-const riskModal = { dlg: null, view: null, maps: [], qs: "", pending: null, opener: null, pressOnBackdrop: false };
+/* ---------- Risk workspaces: Pothole Risk and Exposure Risk open in a modal over the Map, never as pages ----------
+   Each renders into the modal and moves within it (filters, detail) without touching the URL, so the Map underneath
+   stays mounted. The native <dialog> makes the page behind inert, traps focus and closes on Esc. */
+const WORKSPACES = {
+  forecast: { route: "forecast", title: "Pothole Risk Forecast", sub: "Where cracks may turn into potholes after freeze-thaw (heuristic, not validated)", render: renderForecast },
+  exposure: { route: "risk", title: "Exposure Risk", sub: "Damage severity weighted by who uses the road nearby (an infrastructure proxy, not traffic counts)", render: renderRisk },
+};
+const workspaceFor = (route) => Object.keys(WORKSPACES).find((k) => WORKSPACES[k].route === route);
+const riskModal = { dlg: null, view: null, maps: [], kind: "forecast", qs: "", pending: null, opener: null, pressOnBackdrop: false };
 
 function riskDialog() {
   if (riskModal.dlg) return riskModal.dlg;
@@ -1531,7 +1539,7 @@ function riskDialog() {
   dlg.innerHTML = `<div class="risk-modal-panel">
       <header class="risk-modal-head"><div class="risk-modal-title"><h2 id="risk-modal-h"></h2><p class="sub" id="risk-modal-sub"></p></div>
         <span class="muted small hide-sm"><span class="kbd">Esc</span> close</span>
-        <button type="button" class="btn btn-ghost icon-btn risk-modal-x" aria-label="Close pothole risk">${icon("x")}</button></header>
+        <button type="button" class="btn btn-ghost icon-btn risk-modal-x" aria-label="Close">${icon("x")}</button></header>
       <div class="risk-modal-body" id="risk-modal-body"></div>
     </div>`;
   document.body.append(dlg);
@@ -1540,9 +1548,11 @@ function riskDialog() {
   dlg.addEventListener("pointerdown", (e) => { riskModal.pressOnBackdrop = e.target === dlg; });
   dlg.addEventListener("click", (e) => {
     if (e.target === dlg) { if (riskModal.pressOnBackdrop) dlg.close(); return; }
-    // Forecast links (map popups, "All segments") move within the modal instead of changing the page
-    const a = e.target.closest?.('a[href^="#/forecast"]');
-    if (a) { e.preventDefault(); riskGo(a.getAttribute("href").split("?")[1] || ""); }
+    // Workspace links (map popups, "All segments", KPI cards) move within the modal instead of changing the page
+    const a = e.target.closest?.('a[href^="#/"]');
+    const [route, q] = (a?.getAttribute("href") || "").replace(/^#\//, "").split("?");
+    const kind = a && workspaceFor(route);
+    if (kind) { e.preventDefault(); riskGo(q || "", kind); }
   });
   dlg.addEventListener("close", () => {
     riskModal.maps.forEach((m) => m.remove()); riskModal.maps = [];
@@ -1555,25 +1565,28 @@ function riskDialog() {
   return (riskModal.dlg = dlg);
 }
 
-function openRiskModal(qs = "") {
+function openRiskModal(kind = "forecast", qs = "") {
   const dlg = riskDialog();
   if (!dlg.open) {
     riskModal.opener = document.activeElement;
     document.documentElement.classList.add("risk-modal-open");
-    dlg.append($("#toast")); // toasts from the forecast (Run now) stay above the backdrop
+    dlg.append($("#toast")); // toasts from a workspace (Run now, Score) stay above the backdrop
     dlg.showModal();
     $(".risk-modal-x", dlg).focus();
   }
-  riskGo(qs);
+  riskGo(qs, kind);
 }
 
-async function riskGo(qs) {
+async function riskGo(qs, kind = riskModal.kind) {
   const dlg = riskModal.dlg;
   if (!dlg?.open) return;
+  const ws = WORKSPACES[kind];
+  riskModal.kind = kind;
   riskModal.qs = qs;
   riskModal.maps.forEach((m) => m.remove()); riskModal.maps = [];
-  $("#risk-modal-h", dlg).textContent = RISK_PAGE[0];
-  $("#risk-modal-sub", dlg).textContent = RISK_PAGE[1];
+  $("#risk-modal-h", dlg).textContent = ws.title;
+  $("#risk-modal-sub", dlg).textContent = ws.sub;
+  $(".risk-modal-x", dlg).setAttribute("aria-label", `Close ${ws.title.toLowerCase()}`);
   const view = document.createElement("div");
   view.className = "ns-stagger";
   view.innerHTML = SKELETON;
@@ -1581,7 +1594,7 @@ async function riskGo(qs) {
   const body = $("#risk-modal-body", dlg);
   body.replaceChildren(view);
   body.scrollTop = 0;
-  try { await renderForecast(new URLSearchParams(qs)); } catch (e) {
+  try { await ws.render(new URLSearchParams(qs)); } catch (e) {
     if (view !== riskModal.view) return;
     view.innerHTML = errorState(e);
     const retry = $(".empty .btn", view);
@@ -1596,8 +1609,7 @@ const INFRA = { cycling: "Cycling", crossing: "Crossing", bus_stop: "Bus stop", 
 const riskLevelPill = (c) => { const [t, tone] = RISK_LEVELS[c] || [c, ""]; return `<span class="pill ${tone}${c === "critical" ? " strong" : ""}"><span class="dot"></span>${esc(t)}</span>`; };
 const score2 = (v) => (v == null ? `<span class="muted">unknown</span>` : Number(v).toFixed(2));
 
-function baseMap(id, pts) {
-  const el = document.getElementById(id);
+function baseMap(el, pts, sink = maps) {
   if (!el || !window.L) return null;
   const m = L.map(el, { scrollWheelZoom: true }).setView(pts[0] || [44.6425, -63.578], 14);
   const tone = document.documentElement.dataset.theme === "light" ? "Light" : "Dark";
@@ -1605,16 +1617,17 @@ function baseMap(id, pts) {
   L.tileLayer(esri("Base"), { maxZoom: 19, maxNativeZoom: 16, attribution: "Tiles © Esri, HERE, Garmin, © OpenStreetMap contributors" }).addTo(m);
   L.tileLayer(esri("Reference"), { maxZoom: 19, maxNativeZoom: 16 }).addTo(m);
   if (pts.length > 1) m.fitBounds(pts, { padding: [30, 30], maxZoom: 16 });
-  maps.push(m);
+  sink.push(m);
   setTimeout(() => m.invalidateSize(), 50);
   return m;
 }
 
 async function renderRisk(params) {
-  const view = stage();
+  const view = riskModal.view;
   const keys = ["category", "damage", "neighbourhood", "road_class", "infrastructure"];
   const q = new URLSearchParams(keys.filter((k) => params.get(k)).map((k) => [k, params.get(k)]));
   const d = await api(`/api/risk${q.toString() ? `?${q}` : ""}`);
+  if (view !== riskModal.view) return;
   const s = d.summary, o = d.options;
   const runBtn = can("review") ? `<button class="btn btn-sm" id="risk-run">${icon("refresh")}Score new reports</button>` : "";
   const sel = (k, label, opts, fmt = (x) => x) => `<label class="small muted">${label} <select class="input input-sm" data-k="${k}"><option value="">All</option>${opts.map((x) => `<option value="${esc(x)}" ${params.get(k) === x ? "selected" : ""}>${esc(fmt(x))}</option>`).join("")}</select></label>`;
@@ -1651,16 +1664,16 @@ async function renderRisk(params) {
   $$("select[data-k]", view).forEach((el) => el.onchange = () => {
     const p = new URLSearchParams(keys.filter((k) => params.get(k)).map((k) => [k, params.get(k)]));
     el.value ? p.set(el.dataset.k, el.value) : p.delete(el.dataset.k);
-    location.hash = `#/risk${p.toString() ? `?${p}` : ""}`;
+    riskGo(p.toString());
   });
   $$("tr[data-id]", view).forEach((tr) => { const go = () => location.hash = `#/reports?id=${tr.dataset.id}`; tr.onclick = go; tr.onkeydown = (e) => { if (e.key === "Enter") go(); }; });
-  const b = $("#risk-run");
+  const b = $("#risk-run", view);
   if (b) b.onclick = async () => {
     b.disabled = true; b.innerHTML = `${icon("refresh", "spin")}Scoring…`;
-    try { const j = await api("/api/risk/run", { method: "POST" }); toast(`Scored ${j.result?.scored ?? 0} report(s)`); router(); }
+    try { const j = await api("/api/risk/run", { method: "POST" }); toast(`Scored ${j.result?.scored ?? 0} report(s)`); riskGo(riskModal.qs); }
     catch (e) { toast(e.message, false); b.disabled = false; b.innerHTML = `${icon("refresh")}Score new reports`; }
   };
-  const m = baseMap("risk-map", d.reports.map((x) => [x.lat, x.lon]));
+  const m = baseMap($("#risk-map", view), d.reports.map((x) => [x.lat, x.lon]), riskModal.maps);
   if (m) for (const x of d.reports) {
     const [t, , letter, c] = RISK_LEVELS[x.category] || ["", "", "?", "#667085"];
     L.marker([x.lat, x.lon], { title: `${x.class_name} #${x.report_id}: ${t} risk`, icon: L.divIcon({ className: "", iconSize: [22, 22],
@@ -1858,11 +1871,12 @@ const palette = {
   el: $("#palette"), q: $("#palette-q"), list: $("#palette-list"), pending: [], items: [], sel: 0, opener: null,
   commands() {
     const nav = [["overview", "grid"], ["trips", "video"], ["review", "inbox"], ["reports", "file"], ["map", "map"],
-      ["conditions", "activity"], ["risk", "alert"], ["activity", "activity"], ["standards", "clock"], ["authorities", "building"], ["system", "shield"],
+      ["conditions", "activity"], ["activity", "activity"], ["standards", "clock"], ["authorities", "building"], ["system", "shield"],
       ...(can("admin") ? [["users", "user"]] : [])]
       .map(([r, ic]) => ({ group: "Go to", label: ROUTES[r][0], hint: ROUTES[r][1], icon: ic, run: () => (location.hash = `#/${r}`) }));
     const acts = [
       { group: "Actions", label: "New trip", hint: "Upload a dashcam video", icon: "plus", run: () => { location.hash = "#/trips"; setTimeout(() => $("#video")?.click(), 300); } },
+      { group: "Actions", label: "Exposure risk", hint: "Opens over the Map", icon: "alert", run: () => (location.hash = "#/risk") },
       { group: "Actions", label: "Pothole risk", hint: "Opens over the Map", icon: "risk", run: () => (location.hash = "#/forecast") },
       { group: "Actions", label: "Toggle theme", hint: "Light / dark", icon: "moon", run: toggleTheme },
       ...(session.authEnabled && session.user ? [{ group: "Actions", label: "Sign out", hint: session.user.email, icon: "lock", run: signOut }] : []),

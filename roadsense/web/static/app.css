@@ -1220,3 +1220,5 @@ dialog.risk-modal::backdrop { background: var(--overlay); backdrop-filter: blur(
 .risk-dot.risk-high, .risk-dot.risk-critical { border-radius: 4px; }   /* shape as well as colour */
 .risk-dot.risk-critical { color: #fff; outline: 2px solid var(--c); outline-offset: 1px; }
 .pill.strong { font-weight: 700; }
+.map-workspaces { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
+.map-workspaces { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
