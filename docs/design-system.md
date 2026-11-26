@@ -93,7 +93,8 @@ What each status colour means:
 
 Workflow components (v3.2): `progressStrip()` (`.wf-strip` › `.wf-step.is-{done,now,stop,skip,todo,late}`, a
 vertical list under 760 px), `nextStep()` (`.wf-next` › `.wf-form`, built only from the report's `allowed_actions`),
-`overduePill()`, and overdue map markers (a red ring, `OVERDUE_RING`; clusters get `.is-overdue`).
+`overduePill()`, the Overview's status block as four stages (`.ov-stages` › `.ov-stage`: Review, Inspection, Repair,
+Done, each with a one-line breakdown; one muted colour per stage in the bar, echoed by a dot on the row; red only for overdue), and overdue map markers (a red ring, `OVERDUE_RING`; clusters get `.is-overdue`).
 
 ### Scales
 

@@ -336,11 +336,25 @@ async function renderOverview() {
   const inspecting = (by.awaiting_inspection || 0) + (by.inspection_assigned || 0);
 
   // 1. The queue: the one thing a reviewer does here, and where every report stands
-  const order = STATUS_ORDER.filter((k) => by[k]);
+  // the seven statuses read as the report page's four stages, one muted colour each; the review queue's number is
+  // amber and overdue repairs are red text
+  const n = (...ks) => ks.reduce((a, k) => a + (by[k] || 0), 0);
+  const part = (count, text) => count ? `${num(count)} ${text}` : "";
+  const subline = (...xs) => xs.filter(Boolean).join(" · ");
+  const stages = [
+    { key: "review", label: "Review", count: n("pending_approval"), href: "#/review", hot: true,
+      sub: n("pending_approval") ? (can("review") ? "waiting for you" : "waiting for a reviewer") : "queue clear" },
+    { key: "inspection", label: "Inspection", count: n("awaiting_inspection", "inspection_assigned"), href: "#/reports?status=awaiting_inspection",
+      sub: subline(part(by.inspection_assigned, "assigned"), part(by.awaiting_inspection, "not yet assigned")) },
+    { key: "repair", label: "Repair", count: n("repair_needed", "reopened"), href: "#/reports?status=repair_needed",
+      sub: subline(part(by.repair_needed, "scheduled"), part(by.reopened, "reopened"),
+        s.overdue ? `<a class="ov-late" href="#/reports?status=overdue">${num(s.overdue)} overdue</a>` : "") },
+    { key: "done", label: "Done", count: n("repaired", "closed"), href: "#/reports?status=repaired",
+      sub: subline(part(by.repaired, "repaired"), part(s.repair_verification?.verified, "verified"), part(by.closed, "closed")) },
+  ];
   // The bar is a picture of the legend below it; the legend carries the links and the numbers for every reader
-  const stack = order.map((k) => `<span class="ov-seg" data-s="${k}" style="flex:${by[k]}"></span>`).join("");
-  const legend = order.map((k) => `<li><a href="#/reports?status=${k}" data-s="${k}"><span class="sw"></span>${esc(STATUS[k][0])}<b>${num(by[k])}</b></a></li>`).join("");
-  const overdue = s.overdue ? `<a class="ov-overdue" href="#/reports?status=overdue">${icon("clock")}<b>${num(s.overdue)}</b> overdue repair${s.overdue === 1 ? "" : "s"}<span>past the estimated repair date</span>${icon("arrow")}</a>` : "";
+  const stack = stages.filter((g) => g.count).map((g) => `<span class="ov-seg ${g.hot ? "is-hot" : ""}" data-stage="${g.key}" style="flex:${g.count}"></span>`).join("");
+  const legend = stages.map((g) => `<li class="ov-stage ${g.hot && g.count ? "is-hot" : ""}" data-stage="${g.key}"><a class="ov-stage-name" href="${g.href}">${g.label}</a><b>${num(g.count)}</b>${g.sub ? `<span class="ov-stage-sub">${g.sub}</span>` : ""}</li>`).join("");
   const queue = pending
     ? `<div class="ov-num" aria-hidden="true">${num(pending)}</div>
        <h2 class="ov-lead"><span class="sr-only">${num(pending)} </span>${pending === 1 ? "report waits" : "reports wait"} for your review</h2>
@@ -371,10 +385,9 @@ async function renderOverview() {
     <section class="card ov-hero">
       <div class="ov-queue">${queue}</div>
       <div class="ov-status">
-        <div class="ov-k">${num(total)} reports by status</div>
+        <div class="ov-k">${num(total)} reports by stage</div>
         <div class="ov-stack" aria-hidden="true">${stack || '<span class="ov-seg empty"></span>'}</div>
-        <ul class="ov-legend">${legend}</ul>
-        ${overdue}
+        <ul class="ov-stages">${legend}</ul>
       </div>
     </section>
     ${fold("road", "From dashcam to repair",

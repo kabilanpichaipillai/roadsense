@@ -937,18 +937,29 @@ body.loading .topbar::after { opacity: 1; animation: ns-dash .7s linear infinite
 
 .ov-status { align-self: center; min-width: 0; }
 .ov-k { font: 500 var(--text-xs)/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: var(--space-3); }
-.ov-stack { display: flex; gap: 3px; height: 14px; border-radius: var(--radius-full); overflow: hidden; }
+.ov-stack { display: flex; gap: 3px; height: 8px; border-radius: var(--radius-full); overflow: hidden; }
 .ov-seg { display: block; min-width: 8px; background: var(--c, var(--border-strong)); transform-origin: left;
   animation: ov-grow .8s var(--ease) both; transition: filter var(--dur-fast); }
 .ov-seg:nth-child(2) { animation-delay: .08s; } .ov-seg:nth-child(3) { animation-delay: .16s; } .ov-seg:nth-child(n+4) { animation-delay: .24s; }
 .ov-seg:hover { filter: brightness(1.25); }
 .ov-seg.empty { flex: 1; background: var(--border); }
-.ov-legend { list-style: none; margin: var(--space-4) 0 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px var(--space-4); }
-.ov-legend a { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px; margin-inline: -10px; border-radius: var(--radius-sm);
-  color: var(--text-2); transition: background var(--dur-fast), color var(--dur-fast); }
-.ov-legend a:hover { background: var(--surface-hover); color: var(--text); text-decoration: none; }
-.ov-legend .sw { width: 10px; height: 10px; border-radius: 3px; background: var(--c); flex: none; }
-.ov-legend b { margin-left: auto; font: 600 var(--text-md) var(--display); color: var(--text); font-variant-numeric: tabular-nums; }
+/* stages: one muted colour each (the same tones as the statuses inside them), echoed by a dot on the row;
+   the numbers stay neutral except the review queue (amber), and overdue stays red text */
+[data-stage="review"] { --c: var(--amber); }
+[data-stage="inspection"] { --c: color-mix(in srgb, var(--cyan) 75%, var(--surface)); }
+[data-stage="repair"] { --c: color-mix(in srgb, var(--orange) 75%, var(--surface)); }
+[data-stage="done"] { --c: color-mix(in srgb, var(--green) 70%, var(--surface)); }
+.ov-stage-name::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 10px;
+  background: var(--c, var(--border-strong)); vertical-align: 1px; }
+.ov-stages { list-style: none; margin: var(--space-4) 0 0; padding: 0; }
+.ov-stage { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--space-3); padding: 10px 0; border-top: 1px solid var(--border); }
+.ov-stage:first-child { border-top: 0; }
+.ov-stage-name { color: var(--text); font-weight: 500; }
+.ov-stage-name:hover { color: var(--primary-text); text-decoration: none; }
+.ov-stage b { font: 600 var(--text-md) var(--display); color: var(--text); font-variant-numeric: tabular-nums; }
+.ov-stage.is-hot b { color: var(--amber-text); }
+.ov-stage-sub { grid-column: 1 / -1; font-size: var(--text-sm); color: var(--muted); }
+.ov-late { color: var(--red-text); font-weight: 600; }
 
 /* the road: four stops on a lane, what dropped out painted between them */
 .ov-lane { position: relative; list-style: none; margin: 0; padding: var(--space-6) var(--space-5) var(--space-5);
@@ -1030,7 +1041,6 @@ body.loading .topbar::after { opacity: 1; animation: ns-dash .7s linear infinite
   .ov-pin { position: absolute; left: -26px; top: 4px; }
   .ov-stop { padding-bottom: var(--space-2); }
   .ov-drop { justify-items: start; grid-auto-flow: column; justify-content: start; gap: 8px; max-width: none; margin: 0 0 var(--space-4); padding: 0; text-align: left; }
-  .ov-legend { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ---------- v3.2 Trips: GPS picker follows the simulate switch ---------- */
@@ -1451,12 +1461,6 @@ body.drawer-open .ai-fab { visibility: hidden; }
 /* ---------- the municipal workflow: progress strip, next step, overdue ---------- */
 .text-red { color: var(--red-text); font-weight: 600; }
 .tabs button.tab-overdue { color: var(--red-text); }
-.ov-overdue { display: flex; align-items: center; gap: 10px; margin-top: var(--space-4); padding: 10px 12px; border-radius: var(--radius);
-  background: var(--red-soft); border: 1px solid var(--red-border); color: var(--red-text); font-size: var(--text-base); }
-.ov-overdue b { font: 600 var(--text-lg) var(--display); }
-.ov-overdue span { color: var(--text-2); font-size: var(--text-sm); }
-.ov-overdue svg:last-child { margin-left: auto; }
-.ov-overdue:hover { text-decoration: none; filter: brightness(1.1); }
 .legend i.ring { background: transparent; border: 3px solid var(--c); box-sizing: border-box; }
 .ns-cluster.is-overdue { box-shadow: 0 0 0 3px #ff3b30; }
 
