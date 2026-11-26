@@ -83,12 +83,18 @@ What each status colour means:
 | Tone | Meaning in RoadSense |
 |---|---|
 | amber | Waiting on a human (awaiting review, class disputed, rule-engine mode) |
-| blue (primary) | Approved, merged sightings, informational |
-| violet | Sent to an authority, LLM agents |
-| green | Fixed, done, live, guardrail satisfied |
-| red | High severity, failure, destructive |
-| cyan | Provincial routing (NS Public Works) |
-| gray | Rejected, neutral, rule engine |
+| blue (primary) | Merged sightings, informational |
+| cyan | Awaiting inspection; provincial routing |
+| violet | Inspection assigned, LLM agents |
+| orange | Repair needed (scheduled, not done) |
+| green | Repaired, done, live, guardrail satisfied |
+| red | Reopened, overdue, high severity, failure, destructive |
+| gray | Closed (rejected, no repair needed, referred), neutral, rule engine |
+
+Workflow components (v3.2): `progressStrip()` (`.wf-strip` › `.wf-step.is-{done,now,stop,skip,todo,late}`, a
+vertical list under 760 px), `nextStep()` (`.wf-next` › `.wf-form`, built only from the report's `allowed_actions`),
+`overduePill()`, the Overview's status block as four stages (`.ov-stages` › `.ov-stage`: Review, Inspection, Repair,
+Done, each with a one-line breakdown; one muted colour per stage in the bar, echoed by a dot on the row; red only for overdue), and overdue map markers (a red ring, `OVERDUE_RING`; clusters get `.is-overdue`).
 
 ### Scales
 
@@ -171,5 +177,8 @@ Themes: light is the default. Dark follows `prefers-color-scheme` unless the use
 0. `[hidden]` always wins over a component's `display` (global rule): never give an overlay `display` without it.
 1. Need a colour? Map it to a semantic token. If none fits, add a semantic token to **both** themes, never a raw hex in
    a component. The one exception is Leaflet markers (`MAP_COLORS`), which mirror the status tokens.
-2. Need a component? Build it from existing tokens, add it to the table above with its variants and states, and give
+2. Elevation is neutral: no coloured glow shadows (`--primary-glow` is a dark drop shadow); focus rings stay amber.
+   No side stripes on rows or cards, no auto-scrolling content, no small caps labels above headings.
+   `.impeccable/config.json` records the detector exceptions and why (the Inter / Space Grotesk faces are kept).
+3. Need a component? Build it from existing tokens, add it to the table above with its variants and states, and give
    it a keyboard path.

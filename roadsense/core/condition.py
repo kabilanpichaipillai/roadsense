@@ -17,12 +17,13 @@ from collections import defaultdict
 from datetime import datetime
 
 from ..edge.gps import haversine_m
+from . import workflow
 
 # deduct points per defect, by class and band (shaped after ASTM D6433 deduct curves, simplified)
 DEDUCT = {"D40": {"S1": 8, "S2": 15, "S3": 25, "S4": 35}, "D20": {"S1": 5, "S2": 10, "S3": 18, "S4": 25},
           "D10": {"S1": 2, "S2": 4, "S3": 6, "S4": 8}, "D00": {"S1": 2, "S2": 4, "S3": 6, "S4": 8}}
 BIN_M = 100.0
-OPEN = ("pending_approval", "approved", "submitted", "delivery_failed")
+OPEN = workflow.OPEN
 
 
 def rating(index: float) -> str:

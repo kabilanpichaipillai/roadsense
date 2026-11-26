@@ -17,7 +17,7 @@ from roadsense.assistant import context, response, retrieval, service, store, un
 from roadsense.assistant.spec import NOT_ENOUGH, READ_ONLY_REFUSAL, QuerySpec
 from roadsense.common.config import settings
 from roadsense.common.db import session
-from roadsense.core import exposure, reports
+from roadsense.core import exposure, reports, workflow
 from roadsense.core import service_standards as ss
 from roadsense.services import agent_api
 
@@ -90,9 +90,10 @@ def filed(rep, days_ago=40):
         for rule in ss.list_rules(conn):
             if rule["authority"] == HRM:
                 ss.update_rule(conn, rule["id"], {"verification": "approved"}, "admin@roadsense.test")
-        r = reports.set_status(conn, rep["id"], "submitted", "test", service_request_id=str(rep["id"]),
-                               channel="open311")
         at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat(timespec="seconds")
+        workflow.transition(conn, rep["id"], "approve", "reviewer@roadsense.test", "reviewer", at=at)
+        r = workflow.transition(conn, rep["id"], "refer", "mcp:municipality", "system", at=at,
+                                service_request_id=str(rep["id"]), channel="open311")
         return ss.start_clock(conn, r, "mcp:municipality", submitted_at=at)
 
 
@@ -655,3 +656,37 @@ def test_the_page_escapes_everything_it_renders():
     assert 'id="ai-fab"' in html and 'id="ai-panel"' in html and 'data-route="assistant"' not in html
     assert html.index('id="ai-panel"') > html.index('id="view"') and "function aiToggle" in js
     assert 'if (path === "assistant") { aiToggle(true);' in js  # old #/assistant links open the panel
+
+
+# ---------------- the municipal workflow's own words ----------------
+def _through(rep, *steps):
+    with session() as conn:
+        conn.execute("INSERT OR IGNORE INTO users (email, role, created_at) VALUES ('i@as.test', 'inspector', ?)",
+                     ("2026-01-01T00:00:00+00:00",))
+        uid = conn.execute("SELECT id FROM users WHERE email = 'i@as.test'").fetchone()[0]
+        for action, at, fields in steps:
+            workflow.transition(conn, rep["id"], action, "rev@as.test", "reviewer", at=at,
+                                **({"inspector_id": uid} if action == "assign" else {}), **fields)
+
+
+def test_workflow_status_words_are_understood(adb):
+    past = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat(timespec="seconds")
+    waiting, late, planned, done = make(road="Robie Street"), make(), make(road="Quinpool Road"), make()
+    _through(waiting, ("approve", None, {}))
+    eta_past = (datetime.now(timezone.utc) - timedelta(days=5)).date().isoformat()
+    eta_soon = (datetime.now(timezone.utc) + timedelta(days=5)).date().isoformat()
+    _through(late, ("approve", past, {}), ("assign", past, {}), ("repair_needed", past, {"repair_eta": eta_past}))
+    _through(planned, ("approve", None, {}), ("assign", None, {}), ("repair_needed", None, {"repair_eta": eta_soon}))
+    _through(done, ("approve", None, {}), ("assign", None, {}), ("repair_needed", None, {"repair_eta": eta_soon}),
+             ("repaired", None, {}))
+    d = ask("Which repairs are overdue?")
+    assert d["intent"] == "defects" and d["report_refs"] == [late["id"]]
+    assert "past the estimated repair date" in d["interpretation"]
+    assert d["table"]["rows"][0]["repair_eta"] == eta_past
+    d = ask("potholes awaiting inspection")
+    assert d["report_refs"] == [waiting["id"]]
+    assert set(ask("which defects need repair")["report_refs"]) == {late["id"], planned["id"]}
+    assert ask("which potholes have been repaired")["report_refs"] == [done["id"]]
+    assert set(ask("which reports are still open")["report_refs"]) == {waiting["id"], late["id"], planned["id"]}
+    overview = {m["label"]: m["value"] for m in ask("give me an overview")["metrics"]}
+    assert overview["Overdue repairs"] == 1 and overview["Awaiting inspection"] == 1

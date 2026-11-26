@@ -113,6 +113,13 @@ class Settings:
     oidc_redirect_url: str = os.environ.get("ROADSENSE_OIDC_REDIRECT_URL", "http://127.0.0.1:7860/auth/oidc/callback")
     oidc_default_role: str = os.environ.get("ROADSENSE_OIDC_DEFAULT_ROLE", "viewer")
 
+    # ---- the municipal workflow ----
+    # the municipality this installation serves: its own roads stay in RoadSense from review to repair
+    municipality: str = os.environ.get("ROADSENSE_MUNICIPALITY", "Halifax Regional Municipality")
+    # off (default): nothing is ever sent outside. on: reports on roads another authority owns are referred to it
+    # (Open311 / Cityworks / ArcGIS / referral package) after approval, and close as "referred"
+    forward_mode: str = os.environ.get("ROADSENSE_FORWARD_MODE", "off").strip().lower()
+
     # ---- delivery, scheduling and city systems ----
     max_delivery_attempts: int = int(os.environ.get("ROADSENSE_MAX_DELIVERY_ATTEMPTS", "6"))
     scheduler_enabled: bool = os.environ.get("ROADSENSE_SCHEDULER", "1") != "0"
@@ -196,6 +203,10 @@ class Settings:
         if self.keep_raw_video:
             out.append("raw dashcam video is kept after processing (ROADSENSE_KEEP_RAW_VIDEO=1)")
         return out
+
+    @property
+    def forwarding(self) -> bool:
+        return self.forward_mode == "on"
 
     @property
     def llm_enabled(self) -> bool:

@@ -554,18 +554,15 @@ def sweep(conn: sqlite3.Connection, actor: str = "scheduler", at: str | None = N
     """Backfill clocks for reports filed before tracking existed, then record deadline transitions (approaching,
     passed) in the ledger. Runs with every follow-up."""
     started = 0
+    # approved reports in the municipal workflow (and referrals) without a clock: approved before tracking existed
     for r in conn.execute("SELECT r.* FROM reports r LEFT JOIN service_clocks c ON c.report_id = r.id "
-                          "WHERE r.status IN ('submitted', 'fixed') AND c.report_id IS NULL").fetchall():
+                          "WHERE r.approved_at IS NOT NULL AND c.report_id IS NULL AND "
+                          "(r.status != 'closed' OR r.closed_reason = 'referred')").fetchall():
         r = dict(r)
-        sent = conn.execute("SELECT ts FROM audit WHERE subject = ? AND action = 'status_submitted' ORDER BY id "
-                            "LIMIT 1", (f"report:{r['id']}",)).fetchone()
-        start_clock(conn, r, actor, submitted_at=sent[0] if sent else r["updated_at"], source="backfill")
-        if r["status"] == "fixed":
-            fixed = conn.execute("SELECT ts FROM audit WHERE subject = ? AND action = 'status_fixed' ORDER BY id "
-                                 "LIMIT 1", (f"report:{r['id']}",)).fetchone()
-            for ev in ("repair_completed", "report_closed"):
-                record_event(conn, r["id"], ev, actor, "backfill", at=fixed[0] if fixed else r["updated_at"],
-                             note="recorded before service-standard tracking existed")
+        start_clock(conn, r, actor, submitted_at=r["approved_at"], source="backfill")
+        if r["status"] == "repaired":
+            record_event(conn, r["id"], "repair_completed", actor, "backfill", at=r["repaired_at"] or r["updated_at"],
+                         note="recorded before service-standard tracking existed")
         started += 1
     flagged = []
     for c in conn.execute("SELECT * FROM service_clocks WHERE completed_at IS NULL AND closed_at IS NULL").fetchall():

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from ..core import condition, exposure, forecast, repair, service_standards
+from ..core import condition, exposure, forecast, repair, service_standards, workflow
 from ..core.reports import CLASS_NAMES, OPEN_STATUSES
 from .spec import QuerySpec
 
@@ -99,6 +99,7 @@ REPORT_SQL = """
 SELECT r.id, r.trip_id, r.class_code, r.class_name, r.lat, r.lon, r.address, r.municipality, r.jurisdiction,
        r.road_name, r.road_class, r.severity, r.severity_band, r.priority, r.confirmations, r.status,
        r.verification_status, r.closed_at, r.reopened_at, r.reopen_reason, r.best_event_id, r.created_at, r.width_m,
+       r.closed_reason, r.repair_eta, r.reopen_count, r.inspector_id,
        (SELECT MIN(e.captured_at) FROM events e WHERE e.report_id = r.id) AS first_seen,
        (SELECT MAX(e.captured_at) FROM events e WHERE e.report_id = r.id) AS last_seen,
        (SELECT COUNT(*) FROM events e WHERE e.report_id = r.id AND e.suppressed_by IS NULL) AS observations,
@@ -147,8 +148,10 @@ def filter_reports(rows: list[dict], spec: QuerySpec, res: Result, exclude_rejec
                    date_field: str = "first_seen") -> list[dict]:
     if spec.statuses:
         rows = [x for x in rows if x["status"] in spec.statuses]
+    if spec.overdue_repairs:
+        rows = [x for x in rows if workflow.overdue(x)]
     elif exclude_rejected:
-        rows = [x for x in rows if x["status"] != "rejected"]
+        rows = [x for x in rows if not (x["status"] == "closed" and x.get("closed_reason") == "rejected")]
     if spec.classes:
         rows = [x for x in rows if x["class_code"] in spec.classes]
     if spec.bands:
@@ -196,6 +199,7 @@ def report_row(x: dict) -> dict:
     return {"report_id": x["id"], "class_code": x["class_code"], "class_name": x["class_name"], "road": x["road"],
             "neighbourhood": x.get("neighbourhood"), "band": x.get("severity_band") or "–",
             "severity": x.get("severity"), "status": x["status"], "lifecycle": repair.lifecycle(x),
+            "repair_eta": x.get("repair_eta"), "overdue": workflow.overdue(x),
             "verification": x.get("verification_status"), "observations": x.get("observations"),
             "trips": x.get("trips"), "drivers": x.get("confirmations"), "first_seen": x.get("first_seen"),
             "priority": x.get("priority"), "lat": x.get("lat"), "lon": x.get("lon"), "evidence": evidence(x)}
@@ -227,7 +231,9 @@ REPORT_COLUMNS = [col("report_id", "Report"), col("class_name", "Damage"), col("
 
 # ---------------- intents ----------------
 def defects(m: Memo, spec: QuerySpec, scope: list[int] | None) -> Result:
-    res = Result("defects", "Road defects", "observed", columns=REPORT_COLUMNS, sources=["reports", "events"])
+    columns = REPORT_COLUMNS + ([col("repair_eta", "Estimated repair date")] if spec.overdue_repairs or set(
+        spec.statuses) & {"repair_needed", "reopened"} else [])
+    res = Result("defects", "Road defects", "observed", columns=columns, sources=["reports", "events"])
     rows = filter_reports(load_reports(m.conn, scope), spec, res)
     rows = sort_reports(rows, spec.sort or "severity")
     by_class: dict[str, int] = {}
@@ -364,13 +370,13 @@ def repair_verification(m: Memo, spec: QuerySpec, scope: list[int] | None) -> Re
     res = Result("repair_verification", "Independent repair verification", "observed",
                  sources=["reports", "repair_verifications"],
                  columns=[col("report_id", "Report"), col("class_name", "Damage"), col("road", "Location"),
-                          col("closed_at", "Closed by authority"), col("verification", "Verification"),
+                          col("closed_at", "Marked repaired"), col("verification", "Verification"),
                           col("latest_result", "Latest check"), col("latest_reason", "Why"),
                           col("reopened_at", "Reopened")])
     met = repair.metrics(m.conn)
-    if not met["closed_by_authority"]:
+    if not met["marked_repaired"]:
         res.available = False
-        res.limitations.append("No report has been closed by a road authority yet, so there are no repairs to verify.")
+        res.limitations.append("No report has been marked repaired yet, so there are no repairs to verify.")
         return res
     rows = [x for x in load_reports(m.conn, scope) if x.get("verification_status")]
     rows = filter_reports(rows, spec, res, exclude_rejected=False, date_field="closed_at")
@@ -387,7 +393,7 @@ def repair_verification(m: Memo, spec: QuerySpec, scope: list[int] | None) -> Re
         r["evidence"]["latest_check_at"] = last["observed_at"] if last else None
         out.append(r)
     rate = met["verification_rate"]
-    res.metrics = [metric("Closed by the authority", met["closed_by_authority"]),
+    res.metrics = [metric("Marked repaired", met["marked_repaired"]),
                    metric("Verified", met["verified"]), metric("Reopened (repair not verified)", met["reopened"]),
                    metric("Awaiting verification", met["awaiting_verification"]),
                    metric("Not yet re-observed", met["not_yet_reobserved"]),
@@ -404,7 +410,7 @@ def repair_history(m: Memo, spec: QuerySpec, scope: list[int] | None) -> Result:
     res = Result("repair_history", "Repair history", "observed", sources=["reports", "repair_verifications",
                                                                           "service_clocks"],
                  columns=[col("report_id", "Report"), col("class_name", "Damage"), col("road", "Location"),
-                          col("closed_at", "Closed by authority"), col("verification", "Verification"),
+                          col("closed_at", "Marked repaired"), col("verification", "Verification"),
                           col("checks", "Re-observations"), col("results", "Results"),
                           col("authority_reopened", "Reopened by authority")])
     if scope is None:
@@ -835,6 +841,9 @@ def overview(m: Memo, spec: QuerySpec, scope: list[int] | None) -> Result:
     rk = m.risk()["summary"]
     res.metrics = [metric("Reports", len(rows)), metric("Potholes", sum(x["class_code"] == "D40" for x in rows)),
                    metric("Awaiting review", sum(x["status"] == "pending_approval" for x in rows)),
+                   metric("Awaiting inspection", sum(x["status"] in ("awaiting_inspection", "inspection_assigned")
+                                                     for x in rows)),
+                   metric("Overdue repairs", sum(workflow.overdue(x) for x in rows), "calculated"),
                    metric("Overdue (service standard)", std.get("overdue", 0), "calculated"),
                    metric("Critical or high risk", rk["critical"] + rk["high"], "calculated"),
                    metric("Repairs verified / reopened", f"{rv['verified']} / {rv['reopened']}")]
@@ -891,7 +900,7 @@ def retrieve(conn: sqlite3.Connection, spec: QuerySpec, previous: dict | None = 
 # ---------------- capabilities: what the data can answer right now ----------------
 def capabilities(conn: sqlite3.Connection) -> dict:
     one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
-    reports = one("SELECT COUNT(*) FROM reports WHERE status != 'rejected'")
+    reports = one("SELECT COUNT(*) FROM reports WHERE NOT (status = 'closed' AND closed_reason IS 'rejected')")
     closed = one("SELECT COUNT(*) FROM reports WHERE verification_status IS NOT NULL")
     clocks = one("SELECT COUNT(*) FROM service_clocks")
     scored = one("SELECT COUNT(*) FROM report_risk")

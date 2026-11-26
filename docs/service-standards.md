@@ -1,7 +1,8 @@
 # Service-standard tracking and the duty-of-care ledger
 
-RoadSense compares each report it files against the road authority's published service standard. It also keeps a
-tamper-evident history of what happened to the report.
+RoadSense compares each approved report against the municipality's published service standard (or, for a report
+referred to another authority, against that authority's). It also keeps a tamper-evident history of what happened to
+the report.
 
 This is a **compliance-monitoring and evidence-management tool**. Meeting or missing a published standard does not, on
 its own, establish or remove legal liability. Liability depends on notice, the standard that applied, the facts and
@@ -9,9 +10,11 @@ the law, and those are matters for the authority's own staff and counsel.
 
 ## What happens to a report
 
-1. A reviewer approves the report and delivery sends it (`municipality_server.deliver`). When the authority accepts it,
-   **the service clock starts** in the same transaction (`service_standards.start_clock_safely`). A tracking error is
-   audited and never rolls back a delivery that already happened.
+1. A reviewer approves the report (`core.workflow.transition(..., "approve")`) and **the service clock starts** in the
+   same transaction. The municipal workflow then moves it (see the table below). A report referred to another
+   authority (`ROADSENSE_FORWARD_MODE=on`, a road the municipality does not own) is the exception: its clock starts
+   when the referral is accepted (`service_standards.start_clock_safely`), and a tracking error never rolls back a
+   referral that already happened.
 2. The clock records the **responsible authority**, using the same directory and aliases as delivery, so "Dartmouth"
    resolves to Halifax Regional Municipality.
 3. It looks up the **applicable rule** (see below) and computes the **response** and **completion** deadlines in the
@@ -19,11 +22,26 @@ the law, and those are matters for the authority's own staff and counsel.
 4. The rule is **copied into the clock**: `rule_snapshot`, a `rule_hash` of the timing fields, and the holidays that
    fall inside the window. A database trigger refuses any later change to `submitted_at`, the deadlines or the rule
    reference. Editing a rule later never moves an existing report's deadlines.
-5. Follow-up (scheduled hourly, or the *Run follow-up* button) polls the authority. It turns status changes into
+5. For referred reports, follow-up (scheduled hourly, or the *Run follow-up* button) polls the other authority. It turns status changes into
    lifecycle events and runs `sweep()`, which writes a ledger entry when a deadline becomes close or passes. Repaired
    reports are re-polled for `ROADSENSE_REOPEN_WATCH_DAYS` (30 by default), so a reopened request is noticed.
 6. Reviewers can record what an authority said outside its API (phone, email, referral replies, site visits) from
    the report's timeline. This is the only route for referral-only authorities such as NS Public Works.
+
+### The municipal workflow drives the clock
+
+| Workflow step (`core.workflow`) | Clock event |
+| --- | --- |
+| approve | clock starts (`report_submitted`) |
+| assign inspector | `acknowledged` |
+| inspection recorded (repair needed / no repair needed) | `inspection_started` |
+| no repair needed | `report_closed` (not counted as a repair) |
+| marked repaired | `repair_completed` |
+| reopen (by a person, or a confident re-detection) | `report_reopened` |
+| repair independently verified | `report_closed` |
+
+Each step is also a `workflow_<action>` entry in the same hash chain. Recording an event by hand on the report's
+timeline only moves the clock; a report's own status changes only through the workflow.
 
 The authority's own status (`authority_status`, `authority_notes`) is stored exactly as reported. It is kept separate
 from RoadSense's **lifecycle stage** (submitted → acknowledged → inspection → repair started → repaired → closed, plus

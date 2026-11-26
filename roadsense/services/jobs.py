@@ -5,9 +5,9 @@ again on start (every job is idempotent: the MCP tools and the fallback pipeline
 toolbox and runs jobs one at a time, because the GPU and the LLM rate limit are shared.
 
 The scheduler (one tick a minute) queues the work nobody clicks for:
-    retry_deliveries   approved reports whose delivery failed and whose backoff has passed
-    push_updates       new confirmations on reports already filed with the authority
-    follow_up          status checks at the authority (every ROADSENSE_FOLLOW_UP_MINUTES)
+    retry_deliveries   referrals to another authority that failed and whose backoff has passed (forwarding on)
+    push_updates       new confirmations on reports referred to another authority
+    follow_up          status checks of referred reports at their authority (every ROADSENSE_FOLLOW_UP_MINUTES)
     sync_city          the city's own service requests from its open-data layer (ROADSENSE_EXTERNAL_SYNC_MINUTES)
     purge              the retention policy (hourly)
     forecast_potholes  freeze-thaw pothole risk per road segment, then outcomes of earlier forecasts
@@ -107,10 +107,12 @@ class Worker:
         now_s = now_s or time.time()
         due = []
         with session() as conn:
-            if conn.execute("SELECT 1 FROM reports WHERE status = 'approved' AND (next_attempt_at IS NULL OR "
-                            "next_attempt_at <= ?) AND delivery_attempts > 0", (now(),)).fetchone():
+            forwarding = settings.forwarding  # off: nothing is ever retried towards another authority
+            if forwarding and conn.execute("SELECT 1 FROM reports WHERE status = 'awaiting_inspection' AND delivery_attempts > "
+                            "0 AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?", (now(),)).fetchone():
                 due.append("retry_deliveries")
-            if conn.execute("SELECT 1 FROM reports WHERE status = 'submitted' AND pending_update = 1").fetchone():
+            if forwarding and conn.execute("SELECT 1 FROM reports WHERE closed_reason = 'referred' AND "
+                                           "pending_update = 1").fetchone():
                 due.append("push_updates")
         periods = {"follow_up": settings.follow_up_minutes * 60, "purge": 3600}
         from ..core import exposure
@@ -149,8 +151,8 @@ class Worker:
         if kind == "retry_deliveries":
             with session() as conn:
                 ids = [r["id"] for r in conn.execute(
-                    "SELECT id FROM reports WHERE status = 'approved' AND delivery_attempts > 0 AND "
-                    "(next_attempt_at IS NULL OR next_attempt_at <= ?)", (now(),))]
+                    "SELECT id FROM reports WHERE status = 'awaiting_inspection' AND delivery_attempts > "
+                    "0 AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?", (now(),))]
             out = {}
             for rid in ids:
                 try:
@@ -161,7 +163,7 @@ class Worker:
         if kind == "push_updates":
             with session() as conn:
                 ids = [r["id"] for r in conn.execute(
-                    "SELECT id FROM reports WHERE status = 'submitted' AND pending_update = 1")]
+                    "SELECT id FROM reports WHERE closed_reason = 'referred' AND pending_update = 1")]
             return {rid: municipality_server.push_update(rid, actor="scheduler") for rid in ids}
         if kind == "sync_city":
             with session() as conn:

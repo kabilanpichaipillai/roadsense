@@ -40,7 +40,8 @@ NOT_ENOUGH = "I could not find sufficient information in the available RoadSense
 ClassCode = Literal["D00", "D10", "D20", "D40"]
 Severity = Literal["low", "medium", "high"]
 Band = Literal["S1", "S2", "S3", "S4"]
-ReportStatus = Literal["pending_approval", "approved", "rejected", "submitted", "fixed", "delivery_failed"]
+ReportStatus = Literal["pending_approval", "awaiting_inspection", "inspection_assigned", "repair_needed", "repaired",
+                       "reopened", "closed"]
 Verification = Literal["awaiting", "verified", "reopened"]
 RiskCategory = Literal["critical", "high", "medium", "low"]
 ForecastCategory = Literal["high", "medium", "low"]
@@ -60,7 +61,8 @@ class QuerySpec(BaseModel):
     classes: list[ClassCode] = Field(default_factory=list, max_length=4)
     severity: list[Severity] = Field(default_factory=list, max_length=3)
     bands: list[Band] = Field(default_factory=list, max_length=4)
-    statuses: list[ReportStatus] = Field(default_factory=list, max_length=6)
+    statuses: list[ReportStatus] = Field(default_factory=list, max_length=7)
+    overdue_repairs: bool = False  # status repair needed / reopened and the estimated repair date has passed
     verification: list[Verification] = Field(default_factory=list, max_length=3)
     service_status: list[ServiceStatus] = Field(default_factory=list, max_length=7)
     risk_category: list[RiskCategory] = Field(default_factory=list, max_length=4)
@@ -122,6 +124,8 @@ class QuerySpec(BaseModel):
             out.append("severity " + "/".join(self.severity))
         if self.statuses:
             out.append("status " + "/".join(s.replace("_", " ") for s in self.statuses))
+        if self.overdue_repairs:
+            out.append("past the estimated repair date")
         if self.verification:
             out.append("verification " + "/".join(self.verification))
         if self.service_status:

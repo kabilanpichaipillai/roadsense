@@ -52,6 +52,18 @@ def municipality_at(lat: float, lon: float) -> dict | None:
     return None
 
 
+def owned_here(jurisdiction: str | None) -> bool:
+    """Is this the road authority this installation serves (ROADSENSE_MUNICIPALITY)? Compared by the directory's
+    canonical name, so aliases ("HRM", "Halifax") match. An unknown authority is treated as ours: nothing is sent
+    to an authority RoadSense cannot name."""
+    from .open311 import service_info
+
+    if not jurisdiction or service_info(jurisdiction) is None:
+        return True
+    home = service_info(settings.municipality)
+    return service_info(jurisdiction)["authority"] == (home["authority"] if home else settings.municipality)
+
+
 def _segment(row: dict, lat: float, lon: float) -> dict:
     """Distance to one NSRN row; inf for a row whose geometry can't be read (it is then out of range and skipped)."""
     row = row if isinstance(row, dict) else {}

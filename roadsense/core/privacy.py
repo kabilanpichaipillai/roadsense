@@ -95,6 +95,57 @@ def server_redact(path: Path, box: list[int]) -> dict:
             "egoblur": _egoblur() is not None}
 
 
+PHOTO_KINDS = ("inspection", "repair")
+MAX_PHOTO_BYTES = 5 * 1024 * 1024
+MAX_PHOTO_SIDE = 2000
+JPEG_MAGIC, PNG_MAGIC = bytes([0xFF, 0xD8, 0xFF]), bytes([0x89]) + b"PNG"
+
+
+class PhotoError(ValueError):
+    def __init__(self, message: str, status: int = 415):
+        super().__init__(message)
+        self.message, self.status = message, status
+
+
+def store_staff_photo(data: bytes, kind: str) -> tuple[str, dict]:
+    """An inspector's or crew's photo: JPEG or PNG only, at most 5 MB. It is decoded and re-encoded as JPEG (so no
+    EXIF, no GPS tag survives), scaled to at most 2000 px, and faces and plates are blurred over the whole frame when
+    the face/plate model is configured (the photo is of the road, so nothing else is blurred). Returns the reference
+    stored on the report ("inspection:<id>") and what was done."""
+    import secrets as _secrets
+
+    if kind not in PHOTO_KINDS:
+        raise PhotoError(f"kind must be one of {PHOTO_KINDS}", 422)
+    if len(data) > MAX_PHOTO_BYTES:
+        raise PhotoError("photo larger than 5 MB", 413)
+    if not (data.startswith(JPEG_MAGIC) or data.startswith(PNG_MAGIC)):
+        raise PhotoError("photo must be a JPEG or PNG")
+    frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise PhotoError("photo could not be read")
+    h, w = frame.shape[:2]
+    if max(h, w) > MAX_PHOTO_SIDE:
+        f = MAX_PHOTO_SIDE / max(h, w)
+        frame = cv2.resize(frame, (int(w * f), int(h * f)), interpolation=cv2.INTER_AREA)
+    hits = 0
+    for x1, y1, x2, y2 in _egoblur_boxes(frame):
+        region = frame[y1:y2, x1:x2]
+        if region.size:
+            frame[y1:y2, x1:x2] = cv2.GaussianBlur(region, (51, 51), 0)
+            hits += 1
+    pid = _secrets.token_hex(8)
+    settings.media_dir.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(photo_path(pid)), frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    return f"{kind}:{pid}", {"faces_or_plates": hits, "egoblur": _egoblur() is not None,
+                             "size": [frame.shape[1], frame.shape[0]]}
+
+
+def photo_path(photo_id: str) -> Path:
+    if not photo_id.isalnum():
+        raise PhotoError("bad photo id", 400)
+    return settings.media_dir / f"photo-{photo_id}.jpg"
+
+
 def delete_trip_raw(folder: Path) -> list[str]:
     """Delete the raw video and GPS track of a processed trip (the privacy-blurred frames are already uploaded)."""
     if settings.keep_raw_video or not folder.is_dir():

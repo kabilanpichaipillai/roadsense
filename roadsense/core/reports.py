@@ -11,12 +11,13 @@ from datetime import datetime, timedelta, timezone
 
 from ..common.db import audit, now, row
 from ..edge.gps import haversine_m
+from . import workflow
 from .verify import RECHECK_EDGE_CONF
 
 SEVERITY_WEIGHT = {"low": 1.0, "medium": 2.0, "high": 3.0}
 CLASS_WEIGHT = {"D40": 1.5, "D20": 1.2, "D00": 1.0, "D10": 1.0}  # potholes damage cars; alligator cracks become potholes
 CLASS_NAMES = {"D00": "Longitudinal crack", "D10": "Transverse crack", "D20": "Alligator crack", "D40": "Pothole"}
-OPEN_STATUSES = ("pending_approval", "approved", "submitted", "delivery_failed")
+OPEN_STATUSES = workflow.OPEN
 VERDICTS = ("confirmed", "disputed", "rejected")
 # One severity scale: the band (S1 minor .. S4 urgent). The low/medium/high label is only a name for the band, so the
 # words the authority reads and the band that drives deadlines and risk can never disagree.
@@ -137,12 +138,16 @@ def _event_classes(event: dict) -> set[str]:
     return {event["class_code"], *([event["verifier_class"]] if event.get("verifier_class") else [])}
 
 
+SUPPRESSING = ("rejected", "no_repair_needed")  # a person decided there is nothing to repair here
+
+
 def _recently_rejected(conn: sqlite3.Connection, event: dict, radius_m: float, days: int) -> dict | None:
+    """A report closed as rejected (by a reviewer) or as needing no repair (by an inspector) within `days`."""
     if days <= 0:
         return None
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
-    for r in find_nearby(conn, event["lat"], event["lon"], _event_classes(event), radius_m, statuses=("rejected",)):
-        if r["updated_at"] >= cutoff:
+    for r in find_nearby(conn, event["lat"], event["lon"], _event_classes(event), radius_m, statuses=("closed",)):
+        if r.get("closed_reason") in SUPPRESSING and (r.get("closed_at") or r["updated_at"]) >= cutoff:
             return r
     return None
 
@@ -192,25 +197,29 @@ def create_or_merge(conn: sqlite3.Connection, event_id: str, severity: str, addr
         raise ValueError("severity must be low, medium or high")
     ts = now()
 
-    # the same defect as a report the authority closed: evidence for (or against) the repair, not a new report
+    # the same defect as a report marked repaired: evidence for (or against) the repair, not a new report
     from . import repair
 
     seen_again = repair.check_redetection(conn, event, road_name, actor)
     if seen_again:
         return seen_again
 
-    # a defect a reviewer rejected is not proposed again on every trip: the sighting is recorded against it
+    # a defect a person closed (rejected, no repair needed) is not proposed again on every trip
     rejected = _recently_rejected(conn, event, radius_m,
                                   settings.rejected_suppress_days if suppress_days is None else suppress_days)
     if rejected:
         conn.execute("UPDATE events SET report_id = ?, suppressed_by = ?, status = 'processed' WHERE id = ?",
                      (rejected["id"], rejected["id"], event_id))
         audit(conn, actor, "report_suppressed", f"report:{rejected['id']}",
-              {"event": event_id, "distance_m": rejected["distance_m"], "reason": "near a report a reviewer rejected"})
+              {"event": event_id, "distance_m": rejected["distance_m"],
+               "reason": "near a report closed as " + rejected["closed_reason"].replace("_", " ")})
         return {"action": "suppressed", "report": row(conn.execute("SELECT * FROM reports WHERE id = ?",
                                                                    (rejected["id"],)).fetchone())}
 
-    nearby = find_nearby(conn, event["lat"], event["lon"], _event_classes(event), radius_m)
+    # an open report, or one referred to another authority (new evidence is pushed to it as an update)
+    nearby = [r for r in find_nearby(conn, event["lat"], event["lon"], _event_classes(event), radius_m,
+                                     statuses=(*OPEN_STATUSES, "closed"))
+              if r["status"] != "closed" or r.get("closed_reason") == "referred"]
     if nearby:
         r = nearby[0]
         # a confirmation is an independent pass: several sightings in the same trip count once
@@ -218,9 +227,7 @@ def create_or_merge(conn: sqlite3.Connection, event_id: str, severity: str, addr
         confirmations = len(trips | {event["trip_id"]})
         new_band = max(filter(None, [r.get("severity_band"), band]), default=None)
         sev = level(new_band, max(r["severity"], severity, key=SEVERITY_WEIGHT.get))
-        # after approval the payload is frozen; new evidence is pushed as an update once the request is filed
-        needs_update = r["status"] in ("approved", "submitted", "delivery_failed") and (
-            confirmations != r["confirmations"] or sev != r["severity"])
+        needs_update = r["status"] == "closed" and (confirmations != r["confirmations"] or sev != r["severity"])
         conn.execute("UPDATE reports SET confirmations = ?, severity = ?, priority = ?, updated_at = ?, "
                      "class_disputed = MAX(class_disputed, ?), "
                      "severity_band = COALESCE(?, severity_band), "
@@ -249,30 +256,6 @@ def create_or_merge(conn: sqlite3.Connection, event_id: str, severity: str, addr
         link_external(conn, report, radius_m)
         report = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
     return {"action": action, "report": report}
-
-
-STATUS_FIELDS = {"service_request_id", "description", "channel", "approved_payload_hash", "submitted_payload_hash",
-                 "draft_description", "approved_payload", "approved_by", "approved_at", "rejected_by",
-                 "delivery_attempts", "last_error", "next_attempt_at", "pending_update", "external_ref"}
-AUDIT_SKIP = {"approved_payload"}  # stored on the report; the hash is enough in the audit line
-
-
-def set_status(conn: sqlite3.Connection, report_id: int, status: str, actor: str, **fields) -> dict:
-    before = conn.execute("SELECT status FROM reports WHERE id = ?", (report_id,)).fetchone()
-    sets = ["status = ?", "updated_at = ?"] + [f"{k} = ?" for k in fields if k in STATUS_FIELDS]
-    conn.execute(f"UPDATE reports SET {', '.join(sets)} WHERE id = ?",
-                 [status, now(), *[v for k, v in fields.items() if k in STATUS_FIELDS], report_id])
-    audit(conn, actor, f"status_{status}", f"report:{report_id}",
-          {k: v for k, v in fields.items() if k in STATUS_FIELDS and k not in AUDIT_SKIP} or None)
-    if status == "fixed":  # the authority's closure is kept as is; RoadSense now waits to see the spot again
-        from . import repair
-
-        repair.mark_awaiting(conn, report_id, actor)
-    elif status == "submitted" and before is not None and before[0] == "fixed":
-        from . import repair  # the authority reopened its request: the next closure gets a fresh repair check
-
-        repair.reset_for_reopen(conn, report_id, actor)
-    return row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
 
 
 def record_label(conn: sqlite3.Connection, report_id: int, label: str, actor: str, class_code: str | None = None):

@@ -14,8 +14,8 @@ ROW_FIELDS = ("rank", "report_id", "segment_id", "road", "class_name", "band", "
               "factors", "service_status", "days_left", "time_unit", "trend", "growth_per_week", "passes",
               "recent_cycles", "forecast_cycles", "score", "defects", "potholes", "condition_index", "rating",
               "days_to_recurrence", "authority_reopened", "checks", "results", "latest_result", "closed", "verified",
-              "reopened", "awaiting", "rate", "report_list", "worst_band", "reports", "authority")
-DATE_FIELDS = ("first_seen", "next_due", "closed_at", "reopened_at", "submitted_at")
+              "reopened", "awaiting", "rate", "report_list", "worst_band", "reports", "authority", "overdue")
+DATE_FIELDS = ("first_seen", "next_due", "closed_at", "reopened_at", "submitted_at", "repair_eta")
 
 
 def _clean(v):

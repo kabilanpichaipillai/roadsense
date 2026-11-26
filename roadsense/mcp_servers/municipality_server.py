@@ -1,7 +1,11 @@
-"""MCP server (Filing / Follow-up): deliver approved reports to the road authority and track their status.
+"""MCP server (Filing / Follow-up): refer approved reports to another road authority and track their status.
+
+RoadSense is the municipality's own system: a report on its own roads is never sent anywhere. Referral is for roads
+another authority owns, and only when forwarding is on (ROADSENSE_FORWARD_MODE).
 
 Guardrails in code, whatever an agent asks for: only reviewer-approved reports are sent; what is sent is the payload
-snapshot the reviewer approved, re-hashed against the stored hash; and the tools take no free text from the model.
+snapshot the reviewer approved, re-hashed against the stored hash; the tools take no free text from the model; and no
+tool changes a report's status except a successful referral, through core.workflow as RoadSense itself.
 """
 from __future__ import annotations
 
@@ -14,12 +18,12 @@ from mcp.types import ToolAnnotations
 
 from ..common.config import settings
 from ..common.db import audit, now, row, session
-from ..core import delivery, open311, reports, service_standards
+from ..core import delivery, open311, service_standards, workflow
 
 mcp = FastMCP("roadsense-municipality")
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
 SEND = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True)
-DELIVERABLE = ("approved", "delivery_failed")
+DELIVERABLE = ("awaiting_inspection",)  # approved, not yet inspected or referred
 
 
 def _approved_payload(conn, report: dict) -> dict:
@@ -43,11 +47,17 @@ def deliver(report_id: int, actor: str = "mcp:municipality") -> dict:
         report = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
         if report is None:
             raise ToolError(f"unknown report {report_id}")
-        if report["status"] in ("submitted", "fixed"):
+        if report["closed_reason"] == "referred":
             return {"ok": True, "already_submitted": True, "service_request_id": report["service_request_id"]}
-        if report["status"] not in DELIVERABLE:
-            raise ToolError(f"report status is {report['status']!r}; only reviewer-approved reports can be sent")
+        if report["status"] not in DELIVERABLE or not report["approved_payload_hash"]:
+            raise ToolError(f"report is {workflow.label(report).lower()!r}; only reviewer-approved reports awaiting "
+                            "inspection can be referred")
         payload = _approved_payload(conn, report)
+        if not settings.forwarding:
+            raise ToolError("forwarding to other road authorities is off (ROADSENSE_FORWARD_MODE): nothing is sent")
+        if not workflow.will_refer(report):
+            raise ToolError(f"{report['jurisdiction']!r} is not another road authority RoadSense refers to: the "
+                            "report stays in RoadSense for inspection and repair")
         digest = open311.payload_hash(payload)
         attempt = (report["delivery_attempts"] or 0) + 1
         try:
@@ -58,19 +68,22 @@ def deliver(report_id: int, actor: str = "mcp:municipality") -> dict:
                 seconds=delivery.backoff_seconds(attempt))).isoformat(timespec="seconds")
             conn.execute("INSERT INTO deliveries (report_id, kind, channel, ok, detail, ts) VALUES (?,?,?,?,?,?)",
                          (report_id, "submit", payload.get("channel"), 0, str(e)[:500], now()))
-            reports.set_status(conn, report_id, "delivery_failed" if final else "approved", actor,
-                               delivery_attempts=attempt, last_error=str(e)[:500], next_attempt_at=nxt)
+            # the report stays where it is (awaiting inspection): staff can resend it or inspect it themselves
+            conn.execute("UPDATE reports SET delivery_attempts = ?, last_error = ?, next_attempt_at = ?, "
+                         "updated_at = ? WHERE id = ?", (attempt, str(e)[:500], nxt, now(), report_id))
+            audit(conn, actor, "delivery_failed" if final else "delivery_retry", f"report:{report_id}",
+                  {"attempt": attempt, "error": str(e)[:500], "next_attempt_at": nxt})
             conn.commit()  # keep the failure record: the ToolError below skips the session's commit
             raise ToolError(f"delivery failed (attempt {attempt}/{settings.max_delivery_attempts}"
                             + (", giving up: resend from the report page" if final else f", retry at {nxt}")
                             + f"): {e}") from e
         conn.execute("INSERT INTO deliveries (report_id, kind, channel, ok, detail, ts) VALUES (?,?,?,?,?,?)",
                      (report_id, "submit", ack["channel"], 1, ack.get("notice"), now()))
-        updated = reports.set_status(conn, report_id, "submitted", actor, service_request_id=ack["service_request_id"],
-                                     channel=ack["channel"], description=payload["description"],
-                                     submitted_payload_hash=digest, delivery_attempts=attempt, last_error=None,
-                                     next_attempt_at=None)
-        # the service-standard clock starts when the authority has the report (never undoes the delivery)
+        updated = workflow.transition(conn, report_id, "refer", actor, workflow.SYSTEM,
+                                      service_request_id=ack["service_request_id"], channel=ack["channel"],
+                                      description=payload["description"], submitted_payload_hash=digest,
+                                      delivery_attempts=attempt)
+        # the other authority's service-standard clock starts when it has the report (never undoes the delivery)
         service_standards.start_clock_safely(conn, updated, actor)
     return {"ok": True, **ack, "authority": payload["authority"], "report_status": updated["status"]}
 
@@ -79,7 +92,7 @@ def push_update(report_id: int, actor: str = "mcp:municipality") -> dict:
     """New evidence on a filed request (more drivers, higher severity) is sent to the authority's system."""
     with session() as conn:
         r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
-        if r is None or r["status"] != "submitted" or not r["pending_update"]:
+        if r is None or r["closed_reason"] != "referred" or not r["pending_update"]:
             return {"ok": True, "skipped": True}
         message = (f"RoadSense update: now confirmed by {r['confirmations']} independent drivers, severity "
                    f"{r['severity']}" + (f" (band {r['severity_band']})" if r.get("severity_band") else "") + ".")
@@ -104,15 +117,16 @@ def service_info(authority: str) -> dict:
 
 @mcp.tool(name="city_submit_request", annotations=SEND)
 def submit_request(report_id: int) -> dict:
-    """Send an APPROVED report to its road authority (the exact payload the reviewer approved). Returns the
-    authority's request id. A failed delivery is retried automatically with backoff."""
+    """Refer an APPROVED report on a road another authority owns to that authority (the exact payload the reviewer
+    approved). Refused while forwarding is off. Returns the authority's request id; a failed delivery is retried
+    automatically with backoff."""
     return deliver(report_id)
 
 
 @mcp.tool(name="city_request_status", annotations=READ)
 def request_status(report_id: int) -> dict:
-    """Status of a submitted report at the authority (open / closed). Marks the report fixed when closed, and back
-    to submitted when the authority reopens it. Every lifecycle change is written to the duty-of-care ledger."""
+    """Status of a referred report at the other authority (open / closed). Updates that authority's service clock
+    and the duty-of-care ledger; the report itself stays closed (referred) in RoadSense."""
     actor = "mcp:municipality"
     with session() as conn:
         report = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
@@ -123,16 +137,13 @@ def request_status(report_id: int) -> dict:
         except delivery.DeliveryError as e:
             raise ToolError(str(e)) from e
         fixed = city.get("status") == "closed"
-        newly = fixed and report["status"] != "fixed"
-        reopened = not fixed and city.get("status") not in (None, "unknown") and report["status"] == "fixed"
-        if newly:
-            reports.set_status(conn, report_id, "fixed", actor)
-        if reopened:
-            reports.set_status(conn, report_id, "submitted", actor)
+        seen = []
         if city.get("status") not in (None, "unknown"):
             service_standards.start_clock_safely(conn, report, actor)  # reports filed before tracking existed
-            service_standards.observe_authority(conn, report_id, city.get("status"), city.get("status_notes"),
-                                                actor, f"authority:{report['channel']}")
+            seen = [e["event_type"] for e in service_standards.observe_authority(
+                conn, report_id, city.get("status"), city.get("status_notes"), actor,
+                f"authority:{report['channel']}")]
+        newly, reopened = "report_closed" in seen, "report_reopened" in seen
     return {"report_id": report_id, "channel": report["channel"], "city_status": city.get("status"),
             "status_notes": city.get("status_notes"), "fixed": fixed, "newly_fixed": newly, "reopened": reopened}
 

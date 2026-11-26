@@ -64,7 +64,8 @@ def default_description(report: dict) -> str:
 
 
 def build_payload(report: dict) -> dict:
-    """What the road authority will receive for this report (without credentials)."""
+    """The report as approved: the record staff work from, and what another road authority receives if the report is
+    referred to it (without credentials)."""
     info = service_info(report.get("jurisdiction")) or {}
     code = info.get("service_code", "POTHOLE") if report["class_code"] == "D40" else \
         info.get("crack_service_code", info.get("service_code", "ROAD_SURFACE"))

@@ -55,7 +55,7 @@ LOCATION_PROMPT = _system(
     "Say how sure you are and explain the choice in one sentence.", LocationResult)
 
 DRAFT_PROMPT = _system(
-    "You are the Drafting step of RoadSense. For each report write the description the road authority will receive: "
-    "2-3 factual sentences for a road crew with the damage type, severity and estimated width if known, how many "
-    "independent drivers confirmed it, the address, and that the photo is privacy-blurred. Mention 'damage class "
-    "disputed between models' if flagged. No speculation, no links, no greetings.", DraftResult)
+    "You are the Drafting step of RoadSense. For each report write the description the municipality's road "
+    "inspector and repair crew will read: 2-3 factual sentences with the damage type, severity and estimated width if "
+    "known, how many independent drivers confirmed it, the address, and that the photo is privacy-blurred. Mention "
+    "'damage class disputed between models' if flagged. No speculation, no links, no greetings.", DraftResult)

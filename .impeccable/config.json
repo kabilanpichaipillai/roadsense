@@ -1,0 +1,38 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "space grotesk",
+        "createdAt": "2026-11-26T22:26:51.334Z",
+        "reason": "user confirmed: keep the design-system display face (docs/design-system.md v3)"
+      },
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "createdAt": "2026-11-26T22:26:51.664Z",
+        "reason": "user confirmed: keep the design-system body face (docs/design-system.md v3)"
+      },
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          "roadsense/web/static/index.html"
+        ],
+        "createdAt": "2026-11-26T22:27:03.212Z",
+        "reason": "agent: measured in the browser; .ld-scene text sits 19px inside its frame, .ld-band content 24px/145px from its edges"
+      },
+      {
+        "rule": "pulsing-dot",
+        "value": "*",
+        "files": [
+          "roadsense/web/static/index.html"
+        ],
+        "createdAt": "2026-11-26T22:27:03.535Z",
+        "reason": "agent: .ai-dots is the assistant's typing indicator, shown only while a request is in flight"
+      }
+    ]
+  }
+}

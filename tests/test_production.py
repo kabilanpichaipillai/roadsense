@@ -13,9 +13,10 @@ from mcp.server.fastmcp.exceptions import ToolError
 from roadsense.agents.llm import LLMUnavailable, cache_key, check_residency
 from roadsense.common.config import settings
 from roadsense.common.db import row, session
-from roadsense.core import condition, delivery, external, media, open311, privacy, reports
+from roadsense.core import condition, delivery, external, media, open311, privacy, reports, service_standards, workflow
 from roadsense.mcp_servers import municipality_server, reports_server
 
+NSPW = "Nova Scotia Public Works"
 HRM = "Halifax Regional Municipality"
 AUTH = {"Authorization": "Bearer test-token"}
 
@@ -26,19 +27,16 @@ def evidence(event_id, verified=0.8, verifier_class=None):
                      (verified, verifier_class, event_id))
 
 
-def make_report(event_id, lat=44.643, lon=-63.58, code="D40", trip="trip1"):
+def make_report(event_id, lat=44.643, lon=-63.58, code="D40", trip="trip1", jurisdiction=HRM):
     add_event(event_id, lat, lon, code=code, trip=trip)
     with session() as conn:
-        return reports.create_or_merge(conn, event_id, "high", "x", HRM, 15, jurisdiction=HRM)
+        return reports.create_or_merge(conn, event_id, "high", "x", HRM, 15, jurisdiction=jurisdiction)
 
 
 def approve(report_id, by="reviewer@roadsense.test"):
     with session() as conn:
-        r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
-        p = open311.build_payload(r)
-        reports.set_status(conn, report_id, "approved", by, approved_payload_hash=open311.payload_hash(p),
-                           approved_payload=json.dumps(p, sort_keys=True), approved_by=by)
-        return p
+        r = workflow.transition(conn, report_id, "approve", by, "reviewer")
+        return json.loads(r["approved_payload"])
 
 
 # ---------------- decision layer ----------------
@@ -55,7 +53,7 @@ def test_one_pothole_seen_as_two_classes_is_one_report(db):
 def test_rejected_damage_is_not_proposed_again(db):
     rid = make_report("ev-r1")["report"]["id"]
     with session() as conn:
-        reports.set_status(conn, rid, "rejected", "reviewer@roadsense.test")
+        workflow.transition(conn, rid, "reject", "reviewer@roadsense.test", "reviewer")
     add_event("ev-r2", 44.64302, -63.58, trip="trip2")
     with session() as conn:
         again = reports.create_or_merge(conn, "ev-r2", "high", "x", HRM, 15, jurisdiction=HRM)
@@ -102,13 +100,14 @@ def test_severity_band():
 
 
 # ---------------- delivery ----------------
-def test_delivery_sends_the_approved_snapshot_and_retries(db, monkeypatch):
-    rid = make_report("ev-d1")["report"]["id"]
+def test_delivery_sends_the_approved_snapshot_and_retries(db, forwarding, monkeypatch):
+    rid = make_report("ev-d1", jurisdiction=NSPW)["report"]["id"]  # a provincial road: referred
     approved = approve(rid)
     add_event("ev-d2", 44.64301, -63.58, trip="trip2")  # a second driver after approval
     with session() as conn:
-        merged = reports.create_or_merge(conn, "ev-d2", "high", "x", HRM, 15, jurisdiction=HRM)["report"]
-    assert merged["confirmations"] == 2 and merged["pending_update"] == 1
+        merged = reports.create_or_merge(conn, "ev-d2", "high", "x", HRM, 15, jurisdiction=NSPW)["report"]
+    # not referred yet: nothing to push anywhere
+    assert merged["confirmations"] == 2 and merged["pending_update"] == 0
 
     calls = []
 
@@ -123,24 +122,34 @@ def test_delivery_sends_the_approved_snapshot_and_retries(db, monkeypatch):
         municipality_server.deliver(rid)
     with session() as conn:
         r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (rid,)).fetchone())
-    assert r["status"] == "approved" and r["delivery_attempts"] == 1 and r["next_attempt_at"]
+    assert r["status"] == "awaiting_inspection" and r["delivery_attempts"] == 1 and r["next_attempt_at"]
     assert municipality_server.deliver(rid)["service_request_id"] == "77"
     assert calls[-1] == approved  # the payload the reviewer saw, not one rebuilt with 2 confirmations
+    with session() as conn:
+        r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (rid,)).fetchone())
+    assert (r["status"], r["closed_reason"]) == ("closed", "referred")
+
+    add_event("ev-d3", 44.64302, -63.58, trip="trip3")  # a third driver after the referral: pushed as an update
+    with session() as conn:
+        merged = reports.create_or_merge(conn, "ev-d3", "high", "x", HRM, 15, jurisdiction=NSPW)["report"]
+    assert merged["id"] == rid and merged["confirmations"] == 3 and merged["pending_update"] == 1
 
     sent = []
     monkeypatch.setattr(delivery, "update", lambda *a, **k: sent.append(a) or {"ok": True})
-    assert municipality_server.push_update(rid)["ok"] and "2 independent drivers" in sent[0][3]
+    assert municipality_server.push_update(rid)["ok"] and "3 independent drivers" in sent[0][3]
 
 
-def test_delivery_gives_up_after_max_attempts(db, monkeypatch):
-    rid = make_report("ev-m1")["report"]["id"]
+def test_delivery_gives_up_after_max_attempts(db, forwarding, monkeypatch):
+    rid = make_report("ev-m1", jurisdiction=NSPW)["report"]["id"]
     approve(rid)
     monkeypatch.setattr(delivery, "submit", lambda *a, **k: (_ for _ in ()).throw(delivery.DeliveryError("down")))
     for _ in range(settings.max_delivery_attempts):
         with pytest.raises(ToolError):
             municipality_server.deliver(rid)
     with session() as conn:
-        assert conn.execute("SELECT status FROM reports WHERE id = ?", (rid,)).fetchone()[0] == "delivery_failed"
+        r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (rid,)).fetchone())
+    assert r["status"] == "awaiting_inspection" and r["next_attempt_at"] is None  # given up: no more retries
+    assert r["delivery_attempts"] == settings.max_delivery_attempts
 
 
 def test_cityworks_and_arcgis_adapters(monkeypatch, tmp_path):
@@ -231,10 +240,15 @@ def test_event_upload_does_not_overwrite_existing_evidence(db):
 
 
 # ---------------- city data, feeds, condition ----------------
-def test_city_requests_sync_dedupes_and_closes_the_loop(db):
+def test_city_requests_sync_dedupes_and_notes_closures_of_referrals(db):
     rid = make_report("ev-c1")["report"]["id"]
+    own = make_report("ev-c2", lat=44.70001, lon=-63.6)["report"]["id"]  # the municipality's own report there
+    approve(rid)
+    approve(own)
     with session() as conn:
-        reports.set_status(conn, rid, "submitted", "test", service_request_id="5", channel="open311")
+        r = workflow.transition(conn, rid, "refer", "mcp:municipality", "system", service_request_id="5",
+                                channel="open311")
+        service_standards.start_clock(conn, r, "mcp:municipality")
     geojson = {"features": [
         {"type": "Feature", "geometry": {"type": "Point", "coordinates": [-63.58, 44.64301]},
          "properties": {"OBJECTID": 11, "REQUEST_TYPE": "Pothole repair", "STATUS": "Closed"}},
@@ -246,9 +260,15 @@ def test_city_requests_sync_dedupes_and_closes_the_loop(db):
         external._store(conn, {"id": "city:11", "source": "city_sr", "status": "open", "lat": 44.64301,
                                "lon": -63.58})
         reports.link_external(conn, row(conn.execute("SELECT * FROM reports WHERE id = ?", (rid,)).fetchone()), 15)
+        external._store(conn, {"id": "city:12", "source": "city_sr", "status": "closed", "lat": 44.70001,
+                               "lon": -63.6})
+        reports.link_external(conn, row(conn.execute("SELECT * FROM reports WHERE id = ?", (own,)).fetchone()), 15)
         out = external.sync_city_requests(conn, "https://gis.example/FeatureServer/0", client=client)
-        status = conn.execute("SELECT status FROM reports WHERE id = ?", (rid,)).fetchone()[0]
-    assert out["skipped"] == 1 and out["reports_fixed"] == [rid] and status == "fixed"
+        statuses = dict(conn.execute("SELECT id, status FROM reports WHERE id IN (?, ?)", (rid, own)).fetchall())
+        clock = service_standards.get_clock(conn, rid)
+    assert out["skipped"] == 1 and out["referrals_closed"] == [rid] and clock["closed_at"]
+    # the sync never closes a report: the referral stays closed (referred), our own report stays in our workflow
+    assert statuses == {rid: "closed", own: "awaiting_inspection"}
 
 
 def test_waze_feed_corroborates_reports(db):
@@ -288,7 +308,7 @@ def test_reviewer_can_correct_a_disputed_class(db):
 
 
 # ---------------- jobs ----------------
-def test_jobs_are_durable_and_the_scheduler_queues_retries(db):
+def test_jobs_are_durable_and_the_scheduler_queues_retries(db, forwarding):
     from roadsense.services.jobs import Worker
 
     w = Worker()
@@ -302,6 +322,11 @@ def test_jobs_are_durable_and_the_scheduler_queues_retries(db):
         conn.execute("UPDATE reports SET delivery_attempts = 1, next_attempt_at = '2020-01-01T00:00:00+00:00'")
     assert "retry_deliveries" in w.schedule()
     assert "retry_deliveries" not in w.schedule()  # not queued twice
+    object.__setattr__(settings, "forward_mode", "off")
+    w.last_run.clear()
+    with session() as conn:
+        conn.execute("UPDATE jobs SET status = 'done'")
+    assert "retry_deliveries" not in w.schedule()  # forwarding off: nothing is ever retried outside
 
 
 # ---------------- identity ----------------

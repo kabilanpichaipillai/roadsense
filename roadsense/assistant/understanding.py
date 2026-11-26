@@ -225,9 +225,21 @@ def parse_rules(question: str, previous: dict | None = None, today: date | None 
 
     if re.search(r"\b(reports?|requests?) (that|which) (are|were|is|was) (open|still open|unresolved)\b|\bunresolved\b|"
                  r"\bstill open\b", q):
-        spec["statuses"] = ["pending_approval", "approved", "submitted", "delivery_failed"]
+        spec["statuses"] = ["pending_approval", "awaiting_inspection", "inspection_assigned", "repair_needed", "reopened"]
     elif re.search(r"\bawaiting (review|approval)\b|\bpending\b", q):
         spec["statuses"] = ["pending_approval"]
+    elif re.search(r"\bawaiting (an )?inspection\b|\bwaiting (for|on) (an )?inspection\b|\bnot (yet )?inspected\b|"
+                   r"\bto be inspected\b|\bneed(s|ing)? (an )?inspection\b", q):
+        spec["statuses"] = ["awaiting_inspection", "inspection_assigned"]
+    elif re.search(r"\brepair needed\b|\bneed(s|ing)? (a )?repair\b|\bscheduled for (a )?repair\b|\bawaiting repair\b",
+                   q):
+        spec["statuses"] = ["repair_needed", "reopened"]
+    elif re.search(r"\b(have been|were|are|marked( as)?) repaired\b|\brepaired (reports|defects|potholes|cracks)\b",
+                   q) and not re.search(r"\bverif", q):
+        spec["statuses"] = ["repaired"]
+    if re.search(r"\boverdue repairs?\b|\brepairs? (are |that are |which are )?(overdue|late|behind schedule)\b|"
+                 r"\bpast (the |their )?(estimated )?repair date\b|\bmissed (the |their )?repair date\b", q):
+        spec["overdue_repairs"] = True
     if re.search(r"\b(neighbou?rhoods?|areas? of the city|districts?)\b", q):
         spec["group_by"] = "neighbourhood"
 
@@ -243,6 +255,8 @@ def parse_rules(question: str, previous: dict | None = None, today: date | None 
 
 
 def _intent(q: str, spec: dict) -> str | None:  # noqa: C901 - a flat list of rules reads better than a table here
+    if spec.get("overdue_repairs"):  # the municipality's own repair dates, not an authority's service standard
+        return "defects"
     if re.search(r"\brepair history\b|\bhistory of (the )?repairs?\b|\btheir (repair )?history\b|\bverification history\b",
                  q):
         return "repair_history"

@@ -1,13 +1,13 @@
-"""Independent repair verification: is a pothole the authority closed really gone?
+"""Independent repair verification: is a pothole marked repaired really gone?
 
-The authority's status (reports.status = 'fixed', shown as "Closed") is never changed here. RoadSense keeps its own
-verdict next to it in reports.verification_status:
+The crew's claim (reports.status = 'repaired') and RoadSense's own verdict are kept apart; the verdict is
+reports.verification_status:
 
-    awaiting   the authority closed it; no conclusive re-observation yet
+    awaiting   marked repaired; no conclusive re-observation yet
     verified   enough clean passes from different trips show the spot without the defect
     reopened   a later trip detected the same defect again
 
-Two kinds of observation feed it, both from trips captured after the closure:
+Two kinds of observation feed it, both from trips captured after the repair (reports.closed_at = repaired_at):
 
     re-detection  a damage event of a compatible class within the match radius, on the same road
                   -> confident: not_verified (report reopened); weak: inconclusive
@@ -27,51 +27,16 @@ import sqlite3
 from ..common.config import settings
 from ..common.db import audit, now, row
 from ..edge.gps import bearing_deg, haversine_m
-from . import service_standards
+from . import service_standards, workflow
 
 RESULTS = ("verified", "not_verified", "inconclusive")
-ELIGIBLE = ("awaiting", "reopened")  # verified is final: damage seen later is a new defect and a new report
+ELIGIBLE = ("awaiting",)  # verified is final: damage seen later is a new defect and a new report
 ACTOR = "verify:repair"
 
 
 def lifecycle(report: dict) -> str:
-    """The report lifecycle shown to people: Open, In Progress, Closed (by the authority), Reopened (by RoadSense)."""
-    if report.get("verification_status") == "reopened":
-        return "Reopened"
-    status = report.get("status")
-    if status == "fixed":
-        return "Closed"
-    if status == "submitted":
-        return "In Progress"
-    if status == "rejected":
-        return "Rejected"
-    return "Open"
-
-
-def mark_awaiting(conn: sqlite3.Connection, report_id: int, actor: str) -> None:
-    """The authority closed the report: keep its status, record when, and wait for an independent re-observation."""
-    cur = conn.execute("UPDATE reports SET closed_at = COALESCE(closed_at, ?), verification_status = 'awaiting', "
-                       "verification_updated_at = ? WHERE id = ? AND verification_status IS NULL",
-                       (now(), now(), report_id))
-    if cur.rowcount:
-        audit(conn, actor, "repair_awaiting_verification", f"report:{report_id}",
-              "closed by the authority; waiting for an independent re-observation")
-
-
-def reset_for_reopen(conn: sqlite3.Connection, report_id: int, actor: str) -> bool:
-    """The authority reopened a request it had closed. The finished verification cycle (its closure time, outcome and
-    reopening evidence) is kept in the audit log and the verification history, then cleared, so the next closure
-    starts a fresh check that only counts observations made after that new closure."""
-    r = _report(conn, report_id)
-    if r is None or r.get("verification_status") is None:
-        return False
-    audit(conn, actor, "repair_verification_reset", f"report:{report_id}",
-          {"reason": "the authority reopened the request", "previous": {
-              k: r.get(k) for k in ("verification_status", "closed_at", "reopened_at", "reopen_reason",
-                                    "reopen_event_id")}})
-    conn.execute("UPDATE reports SET verification_status = NULL, verification_updated_at = ?, closed_at = NULL, "
-                 "reopened_at = NULL, reopen_reason = NULL, reopen_event_id = NULL WHERE id = ?", (now(), report_id))
-    return True
+    """The status label people see (core.workflow), e.g. "Repaired (verified)" or "Closed (No repair needed)"."""
+    return workflow.label(report)
 
 
 def _report(conn, report_id: int) -> dict:
@@ -93,7 +58,7 @@ def _eligible(conn: sqlite3.Connection, lat: float, lon: float, radius_m: float,
               states: tuple = ELIGIBLE) -> list[dict]:
     from .reports import find_nearby
 
-    return [r for r in find_nearby(conn, lat, lon, classes, radius_m, statuses=("fixed",))
+    return [r for r in find_nearby(conn, lat, lon, classes, radius_m, statuses=("repaired",))
             if r.get("verification_status") in states]
 
 
@@ -143,9 +108,10 @@ def _event_classes(event: dict) -> set[str]:
 
 def check_redetection(conn: sqlite3.Connection, event: dict, road_name: str | None = None,
                       actor: str = ACTOR) -> dict | None:
-    """Called for each real (verified) damage event before triage. When it is the defect of a closed report, record
-    the attempt, link the sighting to that report (no new duplicate report) and reopen it when the evidence is
-    confident. Returns {"action": "reopened" | "reobserved", "report": ...}, or None to triage normally."""
+    """Called for each real (verified) damage event before triage. When it is the defect of a repaired report, record
+    the attempt, link the sighting to that report (no new duplicate report) and reopen it (core.workflow, as RoadSense
+    itself, never as the agent that triaged the event) when the evidence is confident.
+    Returns {"action": "reopened" | "reobserved", "report": ...}, or None to triage normally."""
     candidates = [r for r in _eligible(conn, event["lat"], event["lon"], settings.repair_match_radius_m,
                                        _event_classes(event))
                   if _same_road(r, road_name) and _after_closure(r, event.get("captured_at"))]
@@ -157,7 +123,7 @@ def check_redetection(conn: sqlite3.Connection, event: dict, road_name: str | No
     threshold = settings.repair_redetect_confidence
     if conf >= threshold:
         result = "not_verified"
-        reason = (f"{event['class_code']} detected again {r['distance_m']:.0f} m from the closed report at confidence "
+        reason = (f"{event['class_code']} detected again {r['distance_m']:.0f} m from the repaired spot at confidence "
                   f"{conf:.2f} (threshold {threshold:.2f}): the defect is still there")
     else:
         result = "inconclusive"
@@ -170,17 +136,10 @@ def check_redetection(conn: sqlite3.Connection, event: dict, road_name: str | No
     action = "reobserved"
     if result == "not_verified":
         action = "reopened"
-        if r["verification_status"] != "reopened":
-            # first reopening keeps its reason and evidence; the authority's status and closure stay as they were
-            conn.execute("UPDATE reports SET verification_status = 'reopened', verification_updated_at = ?, "
-                         "reopened_at = ?, reopen_reason = ?, reopen_event_id = ? WHERE id = ?",
-                         (now(), now(), reason, event["id"], r["id"]))
-            audit(conn, actor, "repair_not_verified", f"report:{r['id']}", {"event": event["id"], "reason": reason})
-            audit(conn, actor, "report_reopened", f"report:{r['id']}",
-                  {"event": event["id"], "reason": reason, "authority_status": r["status"],
-                   "closed_at": r.get("closed_at")})
-            service_standards.note_repair_check(conn, r["id"], "repair_not_verified", actor, reason,
-                                                f"event:{event['id']}")
+        audit(conn, ACTOR, "repair_not_verified", f"report:{r['id']}", {"event": event["id"], "reason": reason})
+        service_standards.note_repair_check(conn, r["id"], "repair_not_verified", ACTOR, reason,
+                                            f"event:{event['id']}")
+        workflow.transition(conn, r["id"], "reopen", ACTOR, workflow.SYSTEM, reason=reason, event_id=event["id"])
     return {"action": action, "report": _report(conn, r["id"])}
 
 
@@ -258,6 +217,9 @@ def check_passes(conn: sqlite3.Connection, trip_id: str, actor: str = ACTOR) -> 
                       {"trips": sorted(trips), "reason": rec["reason"], "hash": rec["evidence_hash"]})
                 service_standards.note_repair_check(conn, r["id"], "repair_verified", actor, rec["reason"],
                                                     f"sha256:{rec['evidence_hash']}")
+                # verified is final: the clock closes (the crew's repair_completed date stays the measured one)
+                service_standards.record_event(conn, r["id"], "report_closed", actor, "roadsense:repair_verification",
+                                               note="repair independently verified")
                 out["verified"].append(r["id"])
             else:
                 out["inconclusive"] += 1
@@ -288,9 +250,9 @@ def summary(conn: sqlite3.Connection, report: dict) -> dict | None:
     latest = hist[-1] if hist else None
     follow = _image_ref_details(conn, latest["followup_image"]) if latest else None
     reason = report.get("reopen_reason") if report["verification_status"] == "reopened" else (
-        latest["reason"] if latest else "closed by the authority; no trip has passed the spot since")
+        latest["reason"] if latest else "marked repaired; no trip has passed the spot since")
     return {"state": report["verification_status"], "lifecycle": lifecycle(report),
-            "authority_status": report["status"], "closed_at": report.get("closed_at"),
+            "report_status": report["status"], "closed_at": report.get("closed_at"),
             "reopened_at": report.get("reopened_at"), "reason": reason,
             "original": original_observation(conn, report), "latest": latest and {
                 **{k: latest[k] for k in ("observation_kind", "observation_id", "observed_at", "distance_m",
@@ -311,7 +273,7 @@ def metrics(conn: sqlite3.Connection) -> dict:
     verified, reopened = by.get("verified", 0), by.get("reopened", 0)
     decided = verified + reopened
     return {
-        "closed_by_authority": sum(by.values()),
+        "marked_repaired": sum(by.values()),
         "awaiting_verification": by.get("awaiting", 0),
         "not_yet_reobserved": sum(r not in observed for r in awaiting_ids),
         "awaiting_inconclusive": sum(r in observed for r in awaiting_ids),
@@ -324,6 +286,6 @@ def metrics(conn: sqlite3.Connection) -> dict:
 
 
 def watchlist(conn: sqlite3.Connection) -> list[dict]:
-    """Closed reports the edge should look at when it passes them: position and class only."""
+    """Repaired reports the edge should look at when it passes them: position and class only."""
     return [dict(r) for r in conn.execute("SELECT id AS report_id, lat, lon, class_code FROM reports "
-                                          "WHERE status = 'fixed' AND verification_status = 'awaiting'")]
+                                          "WHERE status = 'repaired' AND verification_status = 'awaiting'")]

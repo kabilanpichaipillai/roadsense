@@ -1,9 +1,10 @@
 """Sign-in, sessions and roles for the web app.
 
-    admin     everything, including users and city-data sync
-    reviewer  approve / reject / correct / resend reports, run follow-up, upload trips
-    driver    upload trips and see results
-    viewer    read only
+    admin      everything, including users and city-data sync
+    reviewer   approve / reject / correct reports, assign inspectors, record inspections and repairs, reopen
+    inspector  record the outcome of inspections assigned to them, mark them repaired, reopen them
+    driver     upload trips and see results
+    viewer     read only
 
 Two ways in: email + password (scrypt hashes), or single sign-on with any OpenID Connect provider (Microsoft
 Entra ID for municipal staff: set ROADSENSE_OIDC_ISSUER / _CLIENT_ID / _CLIENT_SECRET). An Entra app role named like
@@ -34,12 +35,13 @@ from ..common.config import settings
 from ..common.db import audit, now, row, session
 
 log = logging.getLogger("roadsense.auth")
-ROLES = ("admin", "reviewer", "driver", "viewer")
+ROLES = ("admin", "reviewer", "inspector", "driver", "viewer")
 COOKIE, STATE_COOKIE = "rs_session", "rs_oidc"
 PERMS = {
     "read": ROLES,
     "upload": ("admin", "reviewer", "driver"),
     "review": ("admin", "reviewer"),
+    "inspect": ("admin", "reviewer", "inspector"),  # inspectors only on reports assigned to them (core.workflow)
     "admin": ("admin",),
 }
 router = APIRouter()
@@ -187,7 +189,8 @@ def me(request: Request):
     if u is None:
         return {"authenticated": False, "auth_enabled": settings.auth_enabled, "sso": sso}
     return {"authenticated": True, "auth_enabled": settings.auth_enabled, "sso": sso, "user": public_user(u),
-            "csrf": u["csrf"], "permissions": [p for p in PERMS if allowed(u, p)]}
+            "csrf": u["csrf"], "permissions": [p for p in PERMS if allowed(u, p)],
+            "workflow": {"municipality": settings.municipality, "forwarding": settings.forwarding}}
 
 
 @router.post("/api/auth/login")
@@ -292,7 +295,15 @@ def _admin(request: Request) -> dict:
 
 
 @router.get("/api/users")
-def list_users(request: Request):
+def list_users(request: Request, role: str | None = None):
+    """Admins: every account. Reviewers: the active people of one role (?role=inspector for the assign picker)."""
+    u = getattr(request.state, "user", None)
+    if role and u and allowed(u, "review"):
+        if role not in ROLES:
+            raise HTTPException(422, f"role must be one of {ROLES}")
+        with session() as conn:
+            return [{k: r[k] for k in ("id", "email", "name", "role")} for r in conn.execute(
+                "SELECT * FROM users WHERE role = ? AND active = 1 ORDER BY COALESCE(name, email)", (role,))]
     _admin(request)
     with session() as conn:
         return [public_user(dict(r)) for r in conn.execute("SELECT * FROM users ORDER BY email")]
