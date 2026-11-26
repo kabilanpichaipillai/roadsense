@@ -80,3 +80,18 @@ def test_overview_detail_sections_are_collapsible():
         assert f'fold("{fold_id}", "{title}"' in js
     # a button inside the heading carries the state; the body is hidden until opened
     assert 'aria-expanded="${open}" aria-controls="fold-${id}"' in js and '${open ? "" : "hidden"}' in js
+
+
+def test_review_and_report_pages_share_the_j_k_shortcuts():
+    js = client.get("/static/app.js").text
+    # report pages step through the Reports list order (filters included); the guard never throws on a non-element
+    assert 'reportNav.ids = $$("tr.click")' in js and "location.hash = `#/reports?id=${next}`" in js
+    assert 'ev.target.closest?.("input, textarea, select, [contenteditable]")' in js
+    assert '"Review and report pages"' in js
+
+
+def test_the_assistant_launcher_never_covers_page_actions():
+    js, css = client.get("/static/app.js").text, client.get("/static/app.css").text
+    # seated inside a bottom action bar that keeps room for it; hidden while the phone menu is open
+    assert 'fab.classList.toggle("is-seated", seated)' in js and "var(--ai-room, 0px)" in css
+    assert "body.drawer-open .ai-fab" in css and "body.ai-on .content { padding-bottom: 96px; }" in css
