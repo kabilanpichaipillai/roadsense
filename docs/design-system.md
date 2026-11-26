@@ -176,5 +176,8 @@ Themes: light is the default. Dark follows `prefers-color-scheme` unless the use
 0. `[hidden]` always wins over a component's `display` (global rule): never give an overlay `display` without it.
 1. Need a colour? Map it to a semantic token. If none fits, add a semantic token to **both** themes, never a raw hex in
    a component. The one exception is Leaflet markers (`MAP_COLORS`), which mirror the status tokens.
-2. Need a component? Build it from existing tokens, add it to the table above with its variants and states, and give
+2. Elevation is neutral: no coloured glow shadows (`--primary-glow` is a dark drop shadow); focus rings stay amber.
+   No side stripes on rows or cards, no auto-scrolling content, no small caps labels above headings.
+   `.impeccable/config.json` records the detector exceptions and why (the Inter / Space Grotesk faces are kept).
+3. Need a component? Build it from existing tokens, add it to the table above with its variants and states, and give
    it a keyboard path.

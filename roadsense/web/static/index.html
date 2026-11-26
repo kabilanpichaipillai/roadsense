@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="/static/app.css?v=27">
+  <link rel="stylesheet" href="/static/app.css?v=29">
   <script>try { const t = localStorage.getItem("rs-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
 </head>
 <body>
@@ -146,11 +146,11 @@
 
     <div class="ld-wrap ld-hero">
       <div class="ld-hero-copy">
-        <div class="ld-pill ld-rise"><span class="ld-dot ld-blink"></span>Agentic road-defect reporting for municipalities</div>
-        <h1 class="ld-rise ld-d1" aria-label="Every pothole, seen, sorted and sent.">
-          <span aria-hidden="true">Every<br><span class="ld-rotor"><span class="ld-rotor-track"><span>pothole,</span><span>crack,</span><span>bad patch,</span><span>pothole,</span></span></span><br>seen, sorted<br><span class="ld-mark">and sent.</span></span>
+        <div class="ld-pill ld-rise"><span class="ld-dot ld-blink"></span>Road-defect workflow for municipalities</div>
+        <h1 class="ld-rise ld-d1" aria-label="Every pothole, seen, sorted and fixed.">
+          <span aria-hidden="true">Every<br><span class="ld-rotor"><span class="ld-rotor-track"><span>pothole,</span><span>crack,</span><span>bad patch,</span><span>pothole,</span></span></span><br>seen, sorted<br><span class="ld-mark">and fixed.</span></span>
         </h1>
-        <p class="ld-lede ld-rise ld-d2">A dashcam spots road damage, blurs every bystander on the device, and AI agents triage it to the right road authority. A reviewer approves before anything is filed.</p>
+        <p class="ld-lede ld-rise ld-d2">A dashcam spots road damage and blurs every bystander on the device. AI agents confirm it and merge repeat sightings; your staff review it, inspect it and schedule the repair, and later trips check that the repair held.</p>
         <div class="ld-cta ld-rise ld-d3">
           <button class="ld-btn ld-primary ld-lg ld-magnet" type="button" data-signin>Sign in to RoadSense
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
@@ -170,30 +170,28 @@
           <div class="ld-corners"><i></i><i></i><i></i><i></i></div>
         </div>
         <div class="ld-float">
-          <div class="ld-float-head"><span class="ld-ping"><span></span><span></span></span>Pending approval</div>
+          <div class="ld-float-head"><span class="ld-ping"><span></span><span></span></span>Repair needed</div>
           <svg width="228" height="70" viewBox="0 0 228 70"><path class="ld-route" d="M4 60 C 50 60, 60 14, 110 22 S 180 56, 224 10" fill="none" stroke="#FFB547" stroke-width="3" stroke-linecap="round"/></svg>
-          <div class="ld-float-foot">Routed to <b>Halifax Regional Municipality</b> · Open311</div>
+          <div class="ld-float-foot">Inspected · <b>repair scheduled</b> · verified on a later trip</div>
         </div>
       </div>
     </div>
     <div class="ld-scroll-cue" aria-hidden="true"><span></span></div>
   </section>
 
-  <div class="ld-marquee" aria-hidden="true"><div class="ld-marq">
-    <span>Detect on the edge</span><i>◆</i><span>Blur bystanders</span><i>◆</i><span>Merge duplicates</span><i>◆</i><span>Route by jurisdiction</span><i>◆</i><span>Human approval</span><i>◆</i><span>File via Open311 · Cityworks · ArcGIS</span><i>◆</i>
-    <span>Detect on the edge</span><i>◆</i><span>Blur bystanders</span><i>◆</i><span>Merge duplicates</span><i>◆</i><span>Route by jurisdiction</span><i>◆</i><span>Human approval</span><i>◆</i><span>File via Open311 · Cityworks · ArcGIS</span><i>◆</i>
-  </div></div>
+  <div class="ld-marquee"><ol class="ld-marq" aria-label="The workflow">
+    <li>Detect on the edge</li><li>Blur bystanders</li><li>Merge duplicates</li><li>Human review</li><li>Inspect</li><li>Schedule the repair</li><li>Verify on later trips</li>
+  </ol></div>
 
   <section class="ld-wrap ld-section" id="ld-how">
-    <p class="ld-eyebrow ld-reveal">HOW IT WORKS</p>
-    <h2 class="ld-reveal">From a bump on the road to a ticket the city can act on.</h2>
+    <h2 class="ld-reveal">From a bump on the road to a repair that holds.</h2>
     <div class="ld-journey" id="ld-journey">
       <div class="ld-track" aria-hidden="true"><div class="ld-track-fill"></div><svg class="ld-track-car" width="24" height="40"><use href="#ld-car"/></svg></div>
       <ol class="ld-steps">
         <li class="ld-card ld-stop ld-spot"><div class="ld-num">01</div><svg class="ld-ico" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="3" y="6" width="14" height="12" rx="2"/><path d="M17 10l4-2v8l-4-2"/></svg><h3>Capture</h3><p>A YOLO model finds potholes and cracks in dashcam video and estimates size and severity.</p></li>
         <li class="ld-card ld-stop ld-spot"><div class="ld-num">02</div><svg class="ld-ico" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg><h3>Redact</h3><p>Everything outside the damage is blurred on the device, and the server checks it again.</p></li>
-        <li class="ld-card ld-stop ld-spot"><div class="ld-num">03</div><svg class="ld-ico" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11a7 7 0 0114 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg><h3>Triage</h3><p>Agents verify the sighting, merge duplicates and pick the authority from map evidence.</p></li>
-        <li class="ld-card ld-stop ld-spot"><div class="ld-num">04</div><svg class="ld-ico" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 12l5 5L20 6"/></svg><h3>Approve &amp; file</h3><p>A reviewer sees the exact payload. Only then is it sent, and follow-up tracks the repair.</p></li>
+        <li class="ld-card ld-stop ld-spot"><div class="ld-num">03</div><svg class="ld-ico" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11a7 7 0 0114 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg><h3>Triage</h3><p>Agents verify the sighting, merge duplicates and note who owns the road from map evidence.</p></li>
+        <li class="ld-card ld-stop ld-spot"><div class="ld-num">04</div><svg class="ld-ico" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 12l5 5L20 6"/></svg><h3>Review &amp; repair</h3><p>A reviewer approves, an inspector sets a repair date, the crew marks it done, and later trips confirm the fix or reopen it.</p></li>
       </ol>
     </div>
   </section>
@@ -201,11 +199,10 @@
   <section class="ld-band" id="ld-trust">
     <div class="ld-wrap ld-section ld-split">
       <div class="ld-split-copy ld-reveal">
-        <p class="ld-eyebrow">PRIVACY BY DESIGN</p>
         <h2>The city sees the pothole. Nobody else.</h2>
         <p class="ld-lede">Drag the slider. Faces, plates and house numbers are blurred on the device before a frame leaves the car, and the server checks again. Only the damage stays sharp.</p>
         <ul class="ld-chips">
-          <li>Nothing sent unapproved</li><li>Canadian data residency</li><li>Roles &amp; single sign-on</li><li>Expiring evidence links</li><li>Append-only audit log</li>
+          <li>Nothing sent outside</li><li>Canadian data residency</li><li>Roles &amp; single sign-on</li><li>Expiring evidence links</li><li>Append-only audit log</li>
         </ul>
       </div>
       <div class="ld-compare ld-reveal" id="ld-compare">
