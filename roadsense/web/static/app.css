@@ -1402,3 +1402,30 @@ body.ai-docked .app { margin-right: var(--ai-w); }
   .ai-panel, .ai-fab, .app { transition: none; }
   .ai-dots i { animation: none; opacity: .7; }
 }
+
+/* ---------- Overview folds: a section collapses to its title and a one-line summary ---------- */
+.ov-fold { padding: 0; }
+.ov-fold-h { margin: 0; font-size: inherit; font-weight: inherit; }
+.ov-fold-btn { width: 100%; display: flex; align-items: center; gap: 14px; min-height: 56px; padding: 14px var(--space-5); border: 0;
+  background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; border-radius: inherit; transition: background var(--dur); }
+.ov-fold-btn:hover { background: var(--surface-hover); }
+.ov-fold-btn:focus-visible { outline: 2px solid var(--primary-ring); outline-offset: -2px; }
+.ov-fold-title { flex: none; font-size: var(--text-md); font-weight: 600; letter-spacing: -.01em; }
+.ov-fold-sum { flex: 1; min-width: 0; margin-left: auto; text-align: right; color: var(--muted); font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-fold-chev { flex: none; width: 16px; height: 16px; color: var(--muted); transform: rotate(90deg); transition: transform var(--dur) var(--ease); }
+.ov-fold-btn[aria-expanded="true"] .ov-fold-chev { transform: rotate(-90deg); }
+.ov-fold-btn[aria-expanded="true"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.ov-fold-btn[aria-expanded="true"] .ov-fold-sum { visibility: hidden; }
+.ov-fold-body { border-top: 1px solid var(--border); }
+.ov-fold-desc { margin: 0; padding: 12px var(--space-5) 0; color: var(--muted); font-size: var(--text-sm); }
+.ov-fold-body > .grid.kpis { padding: var(--space-4) var(--space-5) var(--space-5); }
+.ov-fold .kpi { box-shadow: none; background: var(--surface-2); }
+@media (max-width: 760px) {
+  .ov-fold-btn { flex-wrap: wrap; gap: 4px 10px; padding: 12px var(--space-4); }
+  .ov-fold-title { flex: 1; }
+  .ov-fold-sum { order: 3; flex-basis: 100%; text-align: left; white-space: normal; }
+  .ov-fold-desc { padding-inline: var(--space-4); }
+  .ov-fold-body > .grid.kpis { padding: var(--space-3) var(--space-4) var(--space-4); }
+}
+@media (prefers-reduced-motion: reduce) { .ov-fold-chev, .ov-fold-btn { transition: none; } }

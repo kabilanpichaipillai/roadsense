@@ -337,10 +337,10 @@ async function renderOverview() {
         <ul class="ov-legend">${legend}</ul>
       </div>
     </section>
-    <section class="card ov-road section" aria-labelledby="ov-road-h">
-      <div class="card-head"><h2 id="ov-road-h">From dashcam to the right desk</h2><span class="spacer"></span>
-        <span class="desc">${num(s.trips)} trips · ${num(s.llm_calls)} LLM calls · ${num(s.llm_tokens)} tokens · ${pct(s.fallback_rate)} decided by the rule engine</span></div>
-      <ol class="ov-lane">
+    ${fold("road", "From dashcam to the right desk",
+      `${num(s.detections)} spotted → ${num(confirmed)} confirmed → ${num(total)} unique → ${num(sent)} sent`,
+      `${num(s.trips)} trips · ${num(s.llm_calls)} LLM calls · ${num(s.llm_tokens)} tokens · ${pct(s.fallback_rate)} decided by the rule engine`,
+      `<ol class="ov-lane">
         ${stop(s.detections, "Spotted on the dashcam", "Edge model, faces and plates blurred")}
         ${drop(s.false_alarms_removed, "false alarms dropped")}
         ${stop(confirmed, "Confirmed by a second model", "RT-DETR-L checks every crop; AI judges borderline ones")}
@@ -348,8 +348,7 @@ async function renderOverview() {
         ${stop(total, "Unique reports", pending ? `${num(pending)} waiting for you` : "None waiting", pending ? "is-hot" : "")}
         ${drop(total - sent, "not sent yet")}
         ${stop(sent, "Sent to an authority", province ? `${num(province)} to the province` : "Via Open311")}
-      </ol>
-    </section>
+      </ol>`, "ov-road")}
     ${impactCard(s.impact)}
     ${repairCard(s.repair_verification)}
     <div class="ov-row section">
@@ -363,6 +362,30 @@ async function renderOverview() {
         ${trips.length ? `<ul class="ov-trips">${trips.map(tripItem).join("")}</ul>` : emptyState("video", "No trips yet", "Upload a dashcam video with its GPS track.", `<a class="btn btn-primary" style="margin-top:12px" href="#/trips?new=1">${icon("upload")}New trip</a>`)}</section>
     </div>`;
   drawMap("mini-map", reports, { zoom: 14, interactive: false });
+  bindFolds(view);
+}
+
+/* Overview folds: detail-heavy sections collapse to their title and a one-line summary. Closed by default (the page
+   leads with the review queue); each section's state is remembered per browser. */
+const FOLD_KEY = "rs-ov-folds";
+function foldState() { try { return JSON.parse(localStorage.getItem(FOLD_KEY) || "{}"); } catch (e) { return {}; } }
+function fold(id, title, summary, desc, body, cls = "") {
+  const open = !!foldState()[id];
+  return `<section class="card ov-fold section ${cls}" data-fold="${id}" aria-labelledby="fold-${id}-h">
+    <h2 class="ov-fold-h" id="fold-${id}-h"><button type="button" class="ov-fold-btn" aria-expanded="${open}" aria-controls="fold-${id}">
+      <span class="ov-fold-title">${esc(title)}</span><span class="ov-fold-sum">${summary}</span>${icon("arrow", "ov-fold-chev")}</button></h2>
+    <div class="ov-fold-body" id="fold-${id}" ${open ? "" : "hidden"}>${desc ? `<p class="ov-fold-desc">${desc}</p>` : ""}${body}</div>
+  </section>`;
+}
+function bindFolds(root) {
+  $$(".ov-fold-btn", root).forEach((b) => b.onclick = () => {
+    const sec = b.closest(".ov-fold"), open = b.getAttribute("aria-expanded") !== "true";
+    b.setAttribute("aria-expanded", open);
+    $(".ov-fold-body", sec).hidden = !open;
+    const st = foldState();
+    st[sec.dataset.fold] = open;
+    try { localStorage.setItem(FOLD_KEY, JSON.stringify(st)); } catch (e) {}
+  });
 }
 
 /* What the pipeline saved the city: only work that never reached a person is counted. Assumptions shown inline. */
@@ -371,15 +394,16 @@ function impactCard(m) {
   const a = m.assumptions || {};
   const hours = m.staff_minutes_saved / 60;
   const tile = (ic, tone, value, label, hint) => `<div class="card kpi"><div class="label">${label}<span class="ic ${tone}">${icon(ic)}</span></div><div class="value">${value}</div><div class="hint">${hint}</div></div>`;
-  return `<section class="section" aria-labelledby="ov-impact-h">
-    <div class="card-head" style="padding-inline:0"><h2 id="ov-impact-h">What this saved the city</h2><span class="spacer"></span>
-      <span class="desc">At $${esc(a.cost_per_contact)} and ${esc(a.minutes_per_contact)} min per 311 contact · only work that never reached a person is counted</span></div>
-    <div class="grid kpis">
+  const time = hours >= 1 ? hours.toFixed(1) + " h" : num(Math.round(m.staff_minutes_saved)) + " min";
+  return fold("impact", "What this saved the city",
+    `${time} of 311 staff time · $${num(Math.round(m.intake_cost_avoided))} intake cost avoided`,
+    `At $${esc(a.cost_per_contact)} and ${esc(a.minutes_per_contact)} min per 311 contact · only work that never reached a person is counted`,
+    `<div class="grid kpis">
       ${tile("merge", "blue", num(m.duplicate_contacts_avoided), "Duplicate reports avoided", "Repeat sightings merged, never re-filed")}
       ${tile("route", "cyan", num(m.routed_to_province), "Sent to the right desk first", "Provincial roads skip city 311")}
       ${tile("eye", "amber", num(m.false_alarms_filtered), "False alarms filtered", "Before any person looked")}
-      ${tile("activity", "green", hours >= 1 ? hours.toFixed(1) + " h" : num(Math.round(m.staff_minutes_saved)) + " min", "311 staff time saved", `$${num(Math.round(m.intake_cost_avoided))} intake cost avoided`)}
-    </div></section>`;
+      ${tile("activity", "green", time, "311 staff time saved", `$${num(Math.round(m.intake_cost_avoided))} intake cost avoided`)}
+    </div>`);
 }
 
 // Consecutive decisions of the same kind by the same actor read as one line: "Rejected by a reviewer · 4 reports"
@@ -708,16 +732,17 @@ function verificationCard(v) {
 function repairCard(m) {
   if (!m || !m.closed_by_authority) return "";
   const tile = (ic, tone, value, label, hint) => `<div class="card kpi"><div class="label">${label}<span class="ic ${tone}">${icon(ic)}</span></div><div class="value">${value}</div><div class="hint">${hint}</div></div>`;
-  return `<section class="section" aria-labelledby="ov-repair-h">
-    <div class="card-head" style="padding-inline:0"><h2 id="ov-repair-h">Are closed repairs really fixed?</h2><span class="spacer"></span>
-      <span class="desc">Rate = verified ÷ conclusively re-observed (verified + reopened) · repairs nobody has driven past yet are not counted as failures</span></div>
-    <div class="grid kpis">
+  const rate = m.verification_rate == null ? "no conclusive checks yet" : `${m.verification_rate}% verified`;
+  return fold("repair", "Are closed repairs really fixed?",
+    `${rate} · ${num(m.awaiting_verification)} awaiting · ${num(m.not_verified)} reopened`,
+    "Rate = verified ÷ conclusively re-observed (verified + reopened) · repairs nobody has driven past yet are not counted as failures",
+    `<div class="grid kpis">
       ${tile("wrench", "green", m.verification_rate == null ? "–" : `${m.verification_rate}%`, "Repair verification rate", `${num(m.verified)} of ${num(m.eligible)} conclusively re-observed`)}
       ${tile("clock", "amber", num(m.awaiting_verification), "Awaiting verification", `${num(m.not_yet_reobserved)} not re-observed yet · ${num(m.awaiting_inconclusive)} inconclusive so far`)}
       ${tile("wrench", "green", num(m.verified), "Repairs verified", "Clean passes from different trips")}
       ${tile("alert", "red", num(m.not_verified), "Not verified · reopened", "The damage was detected again")}
       ${tile("eye", "blue", num(m.inconclusive_verifications), "Inconclusive checks", "Blurred, dark, out of view or a weak detection")}
-    </div></section>`;
+    </div>`);
 }
 
 function bindDetail(d, after) {

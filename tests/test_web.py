@@ -71,3 +71,12 @@ def test_the_simulate_switch_names_the_whole_simulated_route():
     label = re.search(r'id="simulate"[^>]*><span>([^<]+)</span>', client.get("/static/app.js").text).group(1)
     assert all(s in label for s in streets), (streets, label)
     assert f"{route['distance_m'] / 1000:.1f} km" in label
+
+
+def test_overview_detail_sections_are_collapsible():
+    js = client.get("/static/app.js").text
+    for fold_id, title in (("road", "From dashcam to the right desk"), ("impact", "What this saved the city"),
+                           ("repair", "Are closed repairs really fixed?")):
+        assert f'fold("{fold_id}", "{title}"' in js
+    # a button inside the heading carries the state; the body is hidden until opened
+    assert 'aria-expanded="${open}" aria-controls="fold-${id}"' in js and '${open ? "" : "hidden"}' in js
