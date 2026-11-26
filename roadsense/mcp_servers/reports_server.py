@@ -106,8 +106,8 @@ def create_or_merge(event_id: str, severity: str, jurisdiction: str, rationale: 
 
 @mcp.tool(name="reports_save_draft", annotations=WRITE)
 def save_draft(report_id: int, description: str) -> dict:
-    """Save the 2-3 sentence description that will be sent to the road authority. Only for reports still awaiting
-    driver approval: the driver approves the exact text."""
+    """Save the 2-3 sentence description the inspector and repair crew will read. Only for reports still awaiting
+    review: the reviewer approves the exact text."""
     with session() as conn:
         r = row(conn.execute("SELECT status FROM reports WHERE id = ?", (report_id,)).fetchone())
         if r is None:

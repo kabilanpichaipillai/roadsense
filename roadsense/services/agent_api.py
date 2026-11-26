@@ -414,7 +414,7 @@ def list_reports(status: str | None = None, inspector_id: str | None = None, ove
 
 @app.get("/reports/{report_id}/payload", dependencies=AUTH)
 def payload(report_id: int):
-    """Exactly what the road authority will receive if the reviewer approves, and its hash."""
+    """Exactly what the reviewer approves (the record staff work from, and what a referral would send), and its hash."""
     with session() as conn:
         r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
     if r is None:
