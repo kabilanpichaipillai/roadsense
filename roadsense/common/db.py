@@ -386,6 +386,31 @@ CREATE TABLE IF NOT EXISTS service_clocks (
     ledger_head TEXT,
     updated_at TEXT NOT NULL
 );
+-- Road Inspection Assistant: a person's own conversations. Only the question, the answer text, the validated query
+-- and the ids of the records it cited are kept, never copies of the records (the reports stay the source of truth).
+CREATE TABLE IF NOT EXISTS assistant_conversations (
+    id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    title TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS assistant_conversations_owner ON assistant_conversations (owner, updated_at);
+CREATE TABLE IF NOT EXISTS assistant_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL REFERENCES assistant_conversations (id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    intent TEXT,
+    spec TEXT,
+    result_ids TEXT,
+    segment_ids TEXT,
+    warnings TEXT,
+    understanding TEXT,
+    retrieved_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS assistant_messages_conversation ON assistant_messages (conversation_id, id);
 CREATE TRIGGER IF NOT EXISTS service_clocks_no_delete BEFORE DELETE ON service_clocks
 BEGIN SELECT RAISE(ABORT, 'service clocks are evidence and cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS service_clocks_frozen BEFORE UPDATE ON service_clocks

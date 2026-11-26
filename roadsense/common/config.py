@@ -155,6 +155,20 @@ class Settings:
     exposure_batch: int = int(os.environ.get("ROADSENSE_EXPOSURE_BATCH", "30"))
     exposure_rules_file: str = os.environ.get("ROADSENSE_EXPOSURE_RULES_FILE", "")  # default: built-in rules
 
+    # ---- Road Inspection Assistant (read-only natural-language questions; see docs/assistant.md) ----
+    assistant_enabled: bool = os.environ.get("ROADSENSE_ASSISTANT", "1") != "0"
+    # rules: built-in parser only; auto: the LLM only for questions the rules cannot read; llm: LLM first, rules fallback
+    assistant_understanding: str = os.environ.get("ROADSENSE_ASSISTANT_UNDERSTANDING", "auto").lower()
+    # an optional LLM summary of the retrieved records (ids and numbers are checked against them; else it is dropped)
+    assistant_narrative: bool = os.environ.get("ROADSENSE_ASSISTANT_NARRATIVE", "1") != "0"
+    assistant_models: list[str] = field(default_factory=lambda: _list(
+        "ROADSENSE_ASSISTANT_MODELS", _list("ROADSENSE_LLM_MODELS", DEFAULT_FREE_MODELS)))
+    assistant_llm_timeout_s: float = float(os.environ.get("ROADSENSE_ASSISTANT_LLM_TIMEOUT_S", "20"))
+    assistant_max_tokens: int = int(os.environ.get("ROADSENSE_ASSISTANT_MAX_TOKENS", "500"))
+    assistant_max_answer_chars: int = int(os.environ.get("ROADSENSE_ASSISTANT_MAX_ANSWER_CHARS", "1200"))
+    assistant_context_rows: int = int(os.environ.get("ROADSENSE_ASSISTANT_CONTEXT_ROWS", "15"))
+    assistant_rate_per_min: int = int(os.environ.get("ROADSENSE_ASSISTANT_RATE_PER_MIN", "12"))
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "roadsense.db"

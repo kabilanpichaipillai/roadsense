@@ -96,7 +96,8 @@ class LLM:
             conn.execute("INSERT OR REPLACE INTO llm_cache VALUES (?, ?, ?, ?)",
                          (key, model, message.model_dump_json(exclude_none=True), json.dumps(usage or {})))
 
-    async def chat(self, messages: list[dict], tools: list[dict] | None = None) -> ChatCompletionMessage:
+    async def chat(self, messages: list[dict], tools: list[dict] | None = None,
+                   max_tokens: int = 1500) -> ChatCompletionMessage:
         if self.calls >= self.max_calls:
             raise LLMUnavailable(f"LLM call budget of {self.max_calls} used up")
         self.calls += 1
@@ -117,7 +118,7 @@ class LLM:
             await _bucket.wait()
             try:
                 resp = await self.client.chat.completions.create(
-                    model=self.models[0], messages=messages, tools=tools or None, temperature=0.1, max_tokens=1500,
+                    model=self.models[0], messages=messages, tools=tools or None, temperature=0.1, max_tokens=max_tokens,
                     extra_body=extra)
             except RateLimitError as e:
                 retry = e.response.headers.get("retry-after")

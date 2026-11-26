@@ -701,6 +701,80 @@ def standards_integrity(report_id: int | None = None, who: Actor = Depends(actor
         return ledger.verify(conn, report_id)
 
 
+# ---------- Road Inspection Assistant (read-only) ----------
+PERSON_ROLES = ("admin", "reviewer", "driver", "viewer")
+
+
+def _person(who: Actor) -> str:
+    """The assistant keeps conversations per person, so a call must name the signed-in user."""
+    if who.user is None:
+        raise HTTPException(403, "the assistant answers signed-in people only (X-RoadSense-User)")
+    who.need(PERSON_ROLES)
+    return who.user
+
+
+@app.get("/assistant/capabilities", dependencies=AUTH)
+def assistant_capabilities(who: Actor = Depends(actor)):
+    """What the data can answer right now: suggestions only for capabilities that have records."""
+    _person(who)
+    from ..assistant import retrieval
+
+    with session() as conn:
+        caps = retrieval.capabilities(conn)
+    return {**caps, "enabled": settings.assistant_enabled, "read_only": True,
+            "llm": {"understanding": settings.assistant_understanding if settings.llm_enabled else "rules",
+                    "narrative": settings.assistant_narrative and settings.llm_enabled}}
+
+
+@app.post("/assistant/chat", dependencies=AUTH)
+async def assistant_chat(body: dict = Body(...), who: Actor = Depends(actor)):
+    owner = _person(who)
+    from ..assistant import service as assistant
+
+    question, cid = body.get("question"), body.get("conversation_id")
+    if not isinstance(question, str) or (cid is not None and not isinstance(cid, str)):
+        raise HTTPException(422, "question must be text and conversation_id a string")
+    try:
+        return await assistant.ask(question, owner, who.role or "", cid)
+    except assistant.AssistantError as e:
+        raise HTTPException(e.status, e.message) from e
+
+
+@app.get("/assistant/conversations", dependencies=AUTH)
+def assistant_conversations(who: Actor = Depends(actor)):
+    owner = _person(who)
+    from ..assistant import store
+
+    with session() as conn:
+        return store.listing(conn, owner)
+
+
+@app.get("/assistant/conversations/{cid}", dependencies=AUTH)
+def assistant_conversation(cid: str, who: Actor = Depends(actor)):
+    owner = _person(who)
+    from ..assistant import store
+
+    with session() as conn:
+        conv = store.get(conn, cid, owner)
+        if conv is None:
+            raise HTTPException(404, "unknown conversation")
+        return {**{k: conv[k] for k in ("id", "title", "created_at", "updated_at")},
+                "messages": store.messages(conn, cid)}
+
+
+@app.delete("/assistant/conversations/{cid}", dependencies=AUTH)
+def assistant_delete(cid: str, who: Actor = Depends(actor)):
+    """Deletes the person's own chat history only; no RoadSense record is touched."""
+    owner = _person(who)
+    from ..assistant import store
+
+    with session() as conn:
+        if not store.delete(conn, cid, owner):
+            raise HTTPException(404, "unknown conversation")
+        audit(conn, f"user:{owner}", "assistant_conversation_deleted", f"assistant:{cid}", None)
+    return {"deleted": cid}
+
+
 # ---------- ground truth ----------
 @app.get("/labels", dependencies=AUTH)
 def labels():
