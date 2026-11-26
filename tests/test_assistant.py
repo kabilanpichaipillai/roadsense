@@ -177,6 +177,8 @@ def test_date_ranges_and_severity_filters():
     assert (s.date_from, s.date_to) == (date(2026, 11, 1), date(2026, 11, 10)) and s.classes == ["D00", "D10", "D20"]
     s, _ = understanding.parse_rules("urgent potholes", today=TODAY)
     assert s.bands == ["S4"]
+    s, _ = understanding.parse_rules("the most severe potholes and cracks", today=TODAY)
+    assert s.classes == ["D40", "D00", "D10", "D20"]
 
 
 def test_ambiguous_questions_are_not_guessed():
@@ -648,4 +650,8 @@ def test_the_page_escapes_everything_it_renders():
 
     js = TestClient(app).get("/static/app.js").text
     assert "esc(d.answer.text)" in js and "esc(d.narrative.text)" in js and "esc(m.content)" in js
-    assert "renderAssistant" in js and 'data-route="assistant"' in TestClient(app).get("/").text
+    html = TestClient(app).get("/").text
+    # a launcher on every page and a panel outside the routed view, not a page in the nav
+    assert 'id="ai-fab"' in html and 'id="ai-panel"' in html and 'data-route="assistant"' not in html
+    assert html.index('id="ai-panel"') > html.index('id="view"') and "function aiToggle" in js
+    assert 'if (path === "assistant") { aiToggle(true);' in js  # old #/assistant links open the panel

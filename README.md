@@ -224,7 +224,7 @@ research synthesis in [docs/research-synthesis.md](docs/research-synthesis.md):
 | **Service standards** | Filed reports against each authority's published service standard (overdue, approaching, completed within target), configurable rules and holidays, and each report's hash-chained duty-of-care ledger: [docs/service-standards.md](docs/service-standards.md) |
 | **Authorities** | Halifax 311 (Open311) requests, NS Public Works referrals, Follow-up agent, driver notifications |
 | **Trust & system** | Production checklist, guardrails, privacy and retention, delivery channels, jobs and scheduler, MCP servers |
-| **Road Inspection Assistant** | Ask in plain language ("Which potholes near schools are overdue?"). Read-only; answers are built from RoadSense records with the report ids, evidence, a map, the retrieval time and what is unknown. Follow-ups narrow the previous answer. An LLM is optional: [docs/assistant.md](docs/assistant.md) |
+| **Ask RoadSense** (every page) | Not a page: a button at the bottom right of every page (or Ctrl/⌘ I) opens the Road Inspection Assistant in a panel on the right, docked beside the page on wide screens. Ask in plain language ("Which potholes near schools are overdue?"). Read-only; answers are built from RoadSense records with the report ids, evidence, a map, the retrieval time and what is unknown. Follow-ups narrow the previous answer. An LLM is optional: [docs/assistant.md](docs/assistant.md) |
 | **Users** (admin) | Add people, set roles (admin, reviewer, driver, viewer), disable accounts |
 
 Everyone signs in (password or single sign-on). On first start the admin password is written to

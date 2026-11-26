@@ -33,6 +33,8 @@ The v2 notes below still describe the token layers, components and patterns; rea
 | Armed reject | `.btn-danger.is-armed` | First click arms for 4 s ("Click again to reject"); the second rejects |
 | Upload progress | `uploadTrip()` · `.upload-row` + `.progress[role=progressbar]` | XHR upload with MB sent, time left, Cancel, and a leave-page warning |
 | Toast | `toast(msg, ok)` | Errors stay until dismissed (`.toast-x`); success hides after 4.2 s, paused on hover |
+| Assistant launcher | `#ai-fab` (`.ai-fab`) | Amber pill at the bottom right of every signed-in page; a round icon button on phones. Toasts move above it |
+| Assistant panel | `#ai-panel` · `aiToggle()` · `aiAsk()` | Right-hand panel outside `#view`, so it survives navigation. Docks (pushes `.app`) from 1440 px via `body.ai-docked`, overlays below, full-screen sheet under 760 px. Ctrl/⌘ I toggles, Esc closes and returns focus. Answers render as `.ai-result` cards; Map/Evidence/Limitations are `details.ai-more`; the map is built on first open into its own `ai.maps` list (the router never removes it) |
 
 Also: `/` focuses the page's filter (else opens the palette), typing a number in the palette offers "Open report #N",
 the Reports filter is kept in the URL (`?q=`), and the tab title carries the review queue size.
