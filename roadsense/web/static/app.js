@@ -600,6 +600,9 @@ async function renderReports(params) {
       $(".g-n", g).textContent = term ? `${hits} of ${$$("tr.click", g).length}` : $$("tr.click", g).length;
       shown += hits; tripsShown += !!hits;
     });
+    // J / K on a report page step through exactly these reports, in this order (filters and search included)
+    reportNav.ids = $$("tr.click").filter((tr) => !tr.closest(".trip-group").hidden && (!term || tr.dataset.q.includes(term)))
+      .map((tr) => Number(tr.dataset.id));
     if ($("#report-foot")) $("#report-foot").textContent = term ? `${shown} of ${list.length} reports, in ${tripsShown} trip${tripsShown === 1 ? "" : "s"}` : `${list.length} report${list.length === 1 ? "" : "s"} from ${groups.length} trip${groups.length === 1 ? "" : "s"}`;
   };
   $$(".group-toggle").forEach((b) => b.onclick = () => { b.setAttribute("aria-expanded", b.getAttribute("aria-expanded") !== "true"); apply(); });
@@ -610,7 +613,7 @@ async function renderReports(params) {
     const qs = new URLSearchParams({ ...(filter !== "all" ? { status: filter } : {}), ...(q.value.trim() ? { q: q.value.trim() } : {}) }).toString();
     history.replaceState(null, "", `#/reports${qs ? "?" + qs : ""}`);
   };
-  if (q.value) apply();
+  apply();
 }
 
 /* The repair target comes only from the service-standard rules (frozen at filing, or the rule that would apply now) */
@@ -624,9 +627,12 @@ const flags = (r) => [
   r.confirmations > 1 ? `<span class="pill blue">${icon("merge")}${r.confirmations} drivers</span>` : "",
 ].join("");
 
+/* The order J / K follow on a report page: the Reports list as last shown, else every report in its default order */
+const reportNav = { ids: [] };
 async function renderReportPage(id) {
   const view = stage();
-  const d = await api(`/api/reports/${id}`);
+  const [d] = await Promise.all([api(`/api/reports/${id}`),
+    reportNav.ids.includes(Number(id)) ? null : api("/api/reports").then((all) => { reportNav.ids = all.map((r) => r.id); }).catch(() => {})]);
   $("#crumb-current").textContent = `Reports / #${d.report.id}`;
   view.innerHTML = `<a href="#/reports" class="btn btn-ghost btn-sm" style="margin-left:-10px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>All reports</a><div class="card section">${reportDetail(d)}</div>`;
   bindDetail(d, () => renderReportPage(id));
@@ -693,7 +699,7 @@ function reportDetail(d) {
     ${riskCard(d.risk)}
     ${(d.deliveries || []).length ? `<div class="card-body" style="padding-top:0"><h3 class="h3">Deliveries</h3><ul class="feed">${d.deliveries.map((x) => `<li>${avatar(x.ok ? "agent:filing" : "fallback")}<div style="flex:1;min-width:0"><span class="what">${esc(x.kind === "update" ? "Update" : "Submission")} via ${esc(CHANNELS[x.channel] || x.channel || "?")}</span> ${x.ok ? `<span class="pill green">ok</span>` : `<span class="pill red">failed</span>`}<div class="why">${esc(x.detail || "")}</div></div><span class="when">${ago(x.ts)}</span></li>`).join("")}</ul></div>` : ""}
     ${pending && review ? `<div class="actionbar"><span class="review-pos" id="review-pos" hidden></span><span class="muted small"><span class="kbd">J</span>/<span class="kbd">K</span> next/previous. Sending always needs a click.</span><span class="spacer"></span>
-      <button class="btn btn-danger" id="reject">${icon("x")}Reject</button><button class="btn btn-primary btn-lg" id="approve">${icon("send")}Approve &amp; send to ${esc(authority(r.jurisdiction))}</button></div>` : ""}
+      <div class="actionbar-btns"><button class="btn btn-danger" id="reject">${icon("x")}Reject</button><button class="btn btn-primary btn-lg" id="approve">${icon("send")}Approve &amp; send to ${esc(authority(r.jurisdiction))}</button></div></div>` : ""}
     ${pending && !review ? `<div class="actionbar"><span class="muted small">${icon("lock")} Only reviewers can approve or reject reports. You are signed in as ${esc(session.user?.role || "")}.</span></div>` : ""}`;
 }
 
@@ -838,11 +844,24 @@ async function renderReview(params) {
 }
 const reviewKeys = { ids: [], current: null, open: null };
 document.addEventListener("keydown", (ev) => {
-  if (!location.hash.startsWith("#/review") || ev.target.matches("input, textarea, select") || ev.ctrlKey || ev.metaKey || $("dialog[open]") || !palette.el.hidden) return;
-  const k = ev.key.toLowerCase(), i = reviewKeys.ids.indexOf(reviewKeys.current);
+  // the target can be the document itself (no element focused): closest() is only on elements
+  if (ev.target.closest?.("input, textarea, select, [contenteditable]") || ev.ctrlKey || ev.metaKey || ev.altKey ||
+      $("dialog[open]") || !palette.el.hidden || ai.el?.contains(ev.target)) return;
+  const k = ev.key.toLowerCase();
+  if (k !== "j" && k !== "k") return;
   // navigation only: approving or rejecting is never bound to a single key (it sends a report to a road authority)
-  if (k === "j" && i < reviewKeys.ids.length - 1) reviewKeys.open(reviewKeys.ids[i + 1]);
-  else if (k === "k" && i > 0) reviewKeys.open(reviewKeys.ids[i - 1]);
+  if (location.hash.startsWith("#/review")) {
+    const i = reviewKeys.ids.indexOf(reviewKeys.current);
+    if (k === "j" && i < reviewKeys.ids.length - 1) reviewKeys.open(reviewKeys.ids[i + 1]);
+    else if (k === "k" && i > 0) reviewKeys.open(reviewKeys.ids[i - 1]);
+    return;
+  }
+  const id = Number(location.hash.match(/^#\/reports\?(?:.*&)?id=(\d+)/)?.[1]);
+  if (!id) return;
+  const i = reportNav.ids.indexOf(id);
+  const next = k === "j" ? reportNav.ids[i + 1] : i > 0 ? reportNav.ids[i - 1] : undefined;
+  if (i >= 0 && next) location.hash = `#/reports?id=${next}`;
+  else toast(k === "j" ? "This is the last report in the list" : "This is the first report in the list");
 });
 
 /* ---------- evidence lightbox: the reviewer's only look at the damage, so let them see it properly ---------- */
@@ -880,7 +899,7 @@ document.addEventListener("click", (e) => {
 /* ---------- keyboard shortcuts sheet (?) ---------- */
 const SHORTCUTS = [
   ["Anywhere", [[["Ctrl", "K"], "Search, jump to a page or a report"], [["?"], "Show these shortcuts"], [["Ctrl", "I"], "Open or close the Road Inspection Assistant"], [["/"], "Filter the list on this page"], [["Esc"], "Close a dialog or the menu"]]],
-  ["Review", [[["J"], "Next report"], [["K"], "Previous report"], [["Enter"], "Open the focused report"]]],
+  ["Review and report pages", [[["J"], "Next report"], [["K"], "Previous report"], [["Enter"], "Open the focused report"]]],
   ["Never on a key", [[[], "Approving and rejecting always need a click: they decide what reaches a road authority"]]],
 ];
 function openShortcuts() {
@@ -1856,8 +1875,39 @@ function asHistory(m) {
 function aiSave() { try { localStorage.setItem("rs-ai", JSON.stringify({ open: ai.open, cid: ai.cid })); } catch (e) {} }
 function aiRestore() { try { return JSON.parse(localStorage.getItem("rs-ai") || "{}"); } catch (e) { return {}; } }
 
+/* The launcher never covers a page's own actions: when a bottom action bar (Approve / Reject) sits under it, it
+   rises just above the bar, and toasts rise with it. Re-measured on scroll, resize and every page render. */
+const AI_BOTTOM_BARS = ".actionbar";
+let aiLiftQueued = false;
+function aiLift() {
+  if (aiLiftQueued) return;
+  aiLiftQueued = true;
+  requestAnimationFrame(() => {
+    aiLiftQueued = false;
+    const fab = $("#ai-fab");
+    if (!fab || fab.hidden) return;
+    const vh = window.innerHeight, vw = document.documentElement.clientWidth;
+    const base = parseFloat(getComputedStyle(fab).right) || 20, SIZE = 44;
+    let lift = 0, seated = false;
+    for (const bar of $$(AI_BOTTOM_BARS, main)) {
+      const r = bar.getBoundingClientRect();
+      // a bar pinned in the launcher's corner: the launcher becomes a round button centred on the bar's right end,
+      // and the bar keeps that much room free, so neither its buttons nor the content above are covered
+      const inCorner = r.width && r.top < vh && r.bottom > vh - SIZE - base * 2 && r.right > vw - base - SIZE - 12;
+      const room = inCorner ? Math.max(0, Math.round(r.right - (vw - base - SIZE - 12))) : 0;
+      bar.style.setProperty("--ai-room", `${room}px`);
+      if (inCorner) { seated = true; lift = Math.max(lift, vh - r.bottom + (r.height - SIZE) / 2 - base); }
+    }
+    fab.classList.toggle("is-seated", seated);
+    document.documentElement.style.setProperty("--ai-lift", `${Math.max(0, Math.round(lift))}px`);
+  });
+}
+
 function aiMount() {
   if (ai.el) return;
+  addEventListener("scroll", aiLift, { passive: true });
+  addEventListener("resize", aiLift);
+  new MutationObserver(aiLift).observe(main, { childList: true, subtree: true });
   ai.el = $("#ai-panel");
   const fab = $("#ai-fab");
   fab.hidden = false;
@@ -1911,6 +1961,7 @@ function aiToggle(open, focus = true) {
   ai.el.classList.toggle("is-open", open);
   aiLayout();
   aiSave();
+  aiLift();
   if (open) { aiShow(ai.view); if (focus) setTimeout(() => $("#ai-q").focus(), 60); }
   else {
     ai.maps.forEach((m) => m.remove()); ai.maps = [];
@@ -2235,6 +2286,7 @@ const PHONE = matchMedia("(max-width: 760px)");
 function setDrawer(open, restore = true) {
   const sb = $("#sidebar"), had = sb.contains(document.activeElement);
   sb.classList.toggle("open", open);
+  document.body.classList.toggle("drawer-open", open); // the assistant launcher never floats over the open menu
   sb.inert = PHONE.matches && !open;
   $("#menu").setAttribute("aria-expanded", open);
   if (open) ($("#nav a.active") || $("#nav a"))?.focus();

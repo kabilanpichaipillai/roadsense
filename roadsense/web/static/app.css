@@ -337,9 +337,14 @@ input[type="file"]::file-selector-button { font: inherit; font-weight: 550; heig
 .payload dt { color: var(--muted); background: var(--surface-2); font-size: var(--text-sm); font-weight: 500; }
 .payload dd { word-break: break-word; }
 .payload .hash { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--surface-sunken); font-size: var(--text-sm); color: var(--muted); }
-.actionbar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 14px var(--space-5);
+.actionbar { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 14px calc(var(--space-5) + var(--ai-room, 0px)) 14px var(--space-5);
   border-top: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(8px); }
 .actionbar .spacer { flex: 1; }
+.actionbar > .muted { flex: 1 1 190px; min-width: 0; }
+.actionbar .btn { flex: none; }
+/* Reject and Approve wrap together and stay on the right */
+.actionbar-btns { display: flex; gap: 10px; margin-left: auto; flex: none; }
 
 /* ---------- trip upload ---------- */
 .dropzone { display: grid; place-items: center; gap: 6px; text-align: center; padding: 40px 20px; border-radius: var(--radius-lg);
@@ -455,7 +460,8 @@ details.tool pre { margin: 0; padding: 10px; font-size: 11.5px; white-space: pre
   .funnel .stage .delta, .funnel .stage .rate { display: none; }
   .actionbar { flex-wrap: wrap; }
   .actionbar > .muted { display: none; }
-  .actionbar .btn-lg { flex: 1; }
+  .actionbar .btn-lg { flex: 1; min-width: 0; height: auto; min-height: 44px; padding-block: 8px; white-space: normal; line-height: 1.25; }
+  .actionbar-btns { flex: 1 1 100%; min-width: 0; }
   .payload dl { grid-template-columns: 1fr; }
   .payload dt { border-bottom: 0; padding-bottom: 2px; }
   .input-icon, .input-icon .input { width: 100%; }
@@ -1226,15 +1232,15 @@ dialog.risk-modal::backdrop { background: var(--overlay); backdrop-filter: blur(
 /* ---------- Road Inspection Assistant: launcher + right-hand panel ----------
    Docked (pushes the page) from 1440 px, an overlay below that, a full-screen sheet on phones. */
 :root { --ai-w: 440px; }
-.ai-fab { position: fixed; right: 20px; bottom: 20px; z-index: 44; display: inline-flex; align-items: center; gap: 8px;
+.ai-fab { position: fixed; right: 20px; bottom: calc(20px + var(--ai-lift, 0px)); z-index: 44; display: inline-flex; align-items: center; gap: 8px;
   height: 46px; padding: 0 18px 0 15px; border-radius: var(--radius-full); border: 1px solid color-mix(in srgb, var(--on-primary) 12%, transparent);
   background: var(--primary); color: var(--on-primary); font: 600 var(--text-base)/1 var(--font); letter-spacing: -.005em; cursor: pointer;
-  box-shadow: var(--shadow), 0 1px 0 rgba(255, 255, 255, .25) inset; transition: transform var(--dur) var(--ease), background var(--dur), box-shadow var(--dur); }
+  box-shadow: var(--shadow), 0 1px 0 rgba(255, 255, 255, .25) inset; transition: transform var(--dur) var(--ease), background var(--dur), box-shadow var(--dur), bottom var(--dur) var(--ease); }
 .ai-fab:hover { background: var(--primary-hover); transform: translateY(-1px); box-shadow: var(--shadow-lg); }
 .ai-fab:active { transform: translateY(0); }
 .ai-fab:focus-visible { outline: 3px solid var(--primary-ring); outline-offset: 3px; }
 .ai-fab svg { flex: none; }
-body.ai-on .toast { bottom: 80px; }
+body.ai-on .toast { bottom: calc(80px + var(--ai-lift, 0px)); }
 body.ai-docked .toast { right: calc(var(--ai-w) + 20px); bottom: 20px; }
 
 .ai-panel { position: fixed; top: 0; right: 0; bottom: 0; z-index: 45; width: var(--ai-w); max-width: 100vw; display: flex; flex-direction: column;
@@ -1389,10 +1395,10 @@ body.ai-docked .app { margin-right: var(--ai-w); }
 }
 @media (max-width: 760px) {
   .ai-panel { width: 100vw; border-left: 0; box-shadow: none; transform: translateY(16px); }
-  .ai-fab { right: 16px; bottom: 16px; width: 52px; height: 52px; padding: 0; justify-content: center; }
+  .ai-fab { right: 16px; bottom: calc(16px + var(--ai-lift, 0px)); width: 52px; height: 52px; padding: 0; justify-content: center; }
   .ai-fab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .ai-fab svg { width: 21px; height: 21px; }
-  body.ai-on .toast { bottom: 84px; }
+  body.ai-on .toast { bottom: calc(84px + var(--ai-lift, 0px)); }
   .ai-log { padding: 16px 14px 20px; }
   .ai-hint > span:first-child { display: none; }
   .ai-titles p { display: none; }
@@ -1429,3 +1435,10 @@ body.ai-docked .app { margin-right: var(--ai-w); }
   .ov-fold-body > .grid.kpis { padding: var(--space-3) var(--space-4) var(--space-4); }
 }
 @media (prefers-reduced-motion: reduce) { .ov-fold-chev, .ov-fold-btn { transition: none; } }
+
+/* the launcher seated inside a bottom action bar: a round button, no label */
+.ai-fab.is-seated { width: 44px; height: 44px; padding: 0; justify-content: center; }
+.ai-fab.is-seated .ai-fab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* every page leaves room under its last row, so it can scroll clear of the launcher */
+body.ai-on .content { padding-bottom: 96px; }
+body.drawer-open .ai-fab { visibility: hidden; }
