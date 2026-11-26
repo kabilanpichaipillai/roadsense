@@ -1,5 +1,5 @@
 {
-  "_about": "Exposure-weighted risk and repair equity. These are illustrative starting values chosen by judgement, not validated safety measurements. Copy this file and point ROADSENSE_EXPOSURE_RULES_FILE at the copy to change them; every risk score records the hash of the rules it used.",
+  "_about": "Exposure-weighted risk. These are illustrative starting values chosen by judgement, not validated safety measurements. Copy this file and point ROADSENSE_EXPOSURE_RULES_FILE at the copy to change them; every risk score records the hash of the rules it used.",
   "weights": {
     "_about": "Share of the overall score. Exposure is a PROXY from nearby infrastructure, not measured traffic: a school or bus stop nearby is not proof of pedestrians or passengers.",
     "physical": 0.50,
@@ -45,11 +45,5 @@
     "high": 0.55,
     "critical": 0.75,
     "critical_band": "S4"
-  },
-  "equity": {
-    "_about": "A neighbourhood is flagged for a POSSIBLE difference in service delivery only when its median repair time is at least min_ratio times the rest of the city's, a Mann-Whitney U test gives p < alpha, and both groups have at least min_sample completed repairs. A flag is a question to look into, not a finding of unfair treatment.",
-    "min_sample": 10,
-    "min_ratio": 1.25,
-    "alpha": 0.05
   }
 }

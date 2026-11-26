@@ -369,6 +369,21 @@ def explain(report: dict, factors: list[dict], res: dict, feats: list[dict], osm
     return f"{res['category'].capitalize()} risk: " + "; ".join(parts) + ". Exposure is a proxy, not measured traffic."
 
 
+# ---------------- neighbourhood ----------------
+NEIGHBOURHOOD_SOURCE = "openstreetmap_nominatim"
+
+
+def neighbourhood_for(conn: sqlite3.Connection, lat, lon) -> str | None:
+    """The OSM suburb of the cached reverse geocode of the position, or None. No network call."""
+    if not valid_gps(lat, lon):
+        return None
+    hit = conn.execute("SELECT value FROM geocache WHERE key = ?", (f"v3:{float(lat):.4f},{float(lon):.4f}",)).fetchone()
+    place = json.loads(hit["value"]) if hit else None
+    if place and place.get("suburb") and place.get("source") == NEIGHBOURHOOD_SOURCE:
+        return str(place["suburb"]).strip()
+    return None
+
+
 # ---------------- per report ----------------
 def _hash(obj) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:16]
@@ -377,8 +392,6 @@ def _hash(obj) -> str:
 def compute(conn: sqlite3.Connection, report: dict, client: httpx.Client | None = None, force: bool = False,
             r: dict | None = None) -> dict:
     """Score one report and store it. Returns the stored row; reuses it when nothing it depends on changed."""
-    from .equity import neighbourhood_for  # equity imports this module for the dashboards
-
     r = r or rules()
     rhash = rules_hash(r)
     gps_ok = valid_gps(report.get("lat"), report.get("lon"))
@@ -405,7 +418,7 @@ def compute(conn: sqlite3.Connection, report: dict, client: httpx.Client | None 
     if not gps_ok:
         text = text.replace("nearby infrastructure unknown (no OpenStreetMap data)",
                             "nearby infrastructure unknown (invalid GPS position)")
-    hood = neighbourhood_for(conn, report.get("lat"), report.get("lon"))[0] if gps_ok else None
+    hood = neighbourhood_for(conn, report.get("lat"), report.get("lon")) if gps_ok else None
     conn.execute("DELETE FROM exposure_features WHERE report_id = ?", (report["id"],))
     for f in feats:
         conn.execute("INSERT INTO exposure_features (report_id, osm_type, osm_id, category, name, distance_m, relation,"

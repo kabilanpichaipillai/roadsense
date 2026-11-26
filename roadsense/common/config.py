@@ -146,7 +146,7 @@ class Settings:
     weather_cache_hours: float = float(os.environ.get("ROADSENSE_WEATHER_CACHE_HOURS", "6"))
     offline_weather: bool = os.environ.get("ROADSENSE_OFFLINE_WEATHER", "0") == "1"
 
-    # ---- exposure-weighted risk and repair equity (weights and distances live in core/exposure_rules.json) ----
+    # ---- exposure-weighted risk (weights and distances live in core/exposure_rules.json) ----
     # OpenStreetMap features near a defect (cycleways, crossings, bus stops, schools, footways) via the Overpass API:
     # Nominatim's reverse lookup returns only the road itself. The public instance is for development.
     overpass_url: str = os.environ.get("ROADSENSE_OVERPASS_URL", "https://overpass-api.de/api/interpreter")
@@ -154,8 +154,6 @@ class Settings:
     exposure_minutes: float = float(os.environ.get("ROADSENSE_EXPOSURE_MINUTES", "15"))
     exposure_batch: int = int(os.environ.get("ROADSENSE_EXPOSURE_BATCH", "30"))
     exposure_rules_file: str = os.environ.get("ROADSENSE_EXPOSURE_RULES_FILE", "")  # default: built-in rules
-    # the authority whose requests the city layer holds (ROADSENSE_CITY_SR_LAYER_URL)
-    city_sr_authority: str = os.environ.get("ROADSENSE_CITY_SR_AUTHORITY", "Halifax Regional Municipality")
 
     @property
     def db_path(self) -> Path:

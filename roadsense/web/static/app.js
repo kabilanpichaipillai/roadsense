@@ -189,7 +189,6 @@ const ROUTES = {
   map: ["Map", "Reports on the road network", renderMap],
   conditions: ["Road condition", "Segment-level condition estimate from open defects (not a certified survey)", renderConditions],
   risk: ["Exposure risk", "Damage severity weighted by who uses the road nearby (an infrastructure proxy, not traffic counts)", renderRisk],
-  equity: ["Repair equity", "Repair times by neighbourhood: possible differences in service delivery, with the data behind them", renderEquity],
   activity: ["Agent activity", "Every plan, decision and tool call, from the append-only audit log", renderActivity],
   standards: ["Service standards", "Filed reports against each authority's published service standard, with a tamper-evident history", renderStandards],
   authorities: ["Authorities", "Requests delivered to Halifax 311 and Nova Scotia Public Works", renderAuthorities],
@@ -1688,104 +1687,6 @@ function riskCard(k) {
     <div class="muted small" style="margin-top:8px">${esc(k.disclaimer)} OpenStreetMap: ${esc(k.osm_status)}${k.osm_fetched_at ? `, fetched ${esc(new Date(k.osm_fetched_at).toLocaleDateString())}` : ""}.</div></div>`;
 }
 
-/* ---------- Repair Equity Audit ---------- */
-const COMPARE = { possible_difference: ["Possible difference", "amber", "alert"], no_clear_difference: ["No clear difference", "", "check"], insufficient_data: ["Insufficient data", "", "clock"], not_compared: ["Not compared", "", "x"] };
-const comparePill = (c) => { const [t, tone, ic] = COMPARE[c?.status] || [c?.status || "–", "", "x"]; return `<span class="pill ${tone}" title="${esc(c?.message || (c?.p_value != null ? `ratio ${c.ratio}, ${pval(c.p_value)}` : ""))}">${icon(ic)}${esc(t)}</span>`; };
-const days = (v) => (v == null ? "–" : `${Number(v).toFixed(1)} d`);
-const pval = (p) => (p == null ? "–" : p < 0.001 ? "p < 0.001" : `p = ${Number(p).toFixed(3)}`);
-
-function repairBars(rows, cityMedian) {
-  const data = rows.filter((r) => r.repair.median != null);
-  if (!data.length) return `<div class="muted small">No completed repairs with timestamps to chart.</div>`;
-  const max = Math.max(...data.map((r) => r.repair.max ?? r.repair.median), cityMedian || 0) || 1;
-  const ref = cityMedian != null ? `<span class="bar-ref" style="left:${(cityMedian / max) * 100}%" title="City-wide median ${days(cityMedian)}"></span>` : "";
-  return `<div class="bars" role="img" aria-label="Median repair time by neighbourhood">${data.map((r) => {
-    const flagged = r.comparison?.status === "possible_difference", thin = r.insufficient_data;
-    const tip = `${r.neighbourhood}: median ${days(r.repair.median)}, average ${days(r.repair.mean)}, ${r.repair.n} completed repair(s)${thin ? " (insufficient data)" : ""}`;
-    return `<div class="bar-row" title="${esc(tip)}"><div class="bar-label">${esc(r.neighbourhood)}${flagged ? ` ${icon("alert")}` : ""}</div>
-      <div class="bar-track">${ref}<span class="bar ${thin ? "thin" : ""}" style="width:${Math.max(1, (r.repair.median / max) * 100)}%"></span></div>
-      <div class="bar-val mono small">${days(r.repair.median)} <span class="muted">n=${r.repair.n}</span></div></div>`;
-  }).join("")}</div>
-  <div class="muted small" style="margin-top:8px">Bars: median days from report to completion. Vertical line: city-wide median${cityMedian != null ? ` (${days(cityMedian)})` : ""}. Hatched bars have too few completed repairs to compare. ${icon("alert")} marks a possible difference.</div>`;
-}
-
-async function renderEquity(params) {
-  const view = stage();
-  const keys = ["start", "end", "category", "road_class", "authority", "neighbourhood", "source"];
-  const q = new URLSearchParams(keys.filter((k) => params.get(k)).map((k) => [k, params.get(k)]));
-  const d = await api(`/api/equity${q.toString() ? `?${q}` : ""}`);
-  const o = d.overall, dq = d.data_quality || {}, opts = d.options;
-  const sel = (k, label, list) => `<label class="small muted">${label} <select class="input input-sm" name="${k}"><option value="">All</option>${list.map((x) => `<option ${params.get(k) === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></label>`;
-  const caveat = `<div class="callout amber section-tight">${icon("alert")}<div><b>Potential differences, not findings.</b> ${esc(d.caveat)}</div></div>`;
-  if (!o.requests && !q.toString()) {
-    view.innerHTML = `${caveat}<div class="card">${emptyState("building", "No repair records yet", d.city_layer_configured ? "The city's service-request layer has not returned any pothole requests yet, and no RoadSense reports have been sent." : "Set <code>ROADSENSE_CITY_SR_LAYER_URL</code> to the city's ArcGIS service-request layer (HRM publishes Cityworks requests on ArcGIS Hub). RoadSense reports sent to an authority are counted too.")}</div>`;
-    return;
-  }
-  const rows = d.neighbourhoods;
-  const quality = [
-    dq.unassigned_neighbourhood ? `${dq.unassigned_neighbourhood} record(s) have no neighbourhood evidence (shown as Unassigned)` : "",
-    dq.duplicates_removed ? `${dq.duplicates_removed} duplicate city request(s) counted once` : "",
-    dq.linked_to_city_request ? `${dq.linked_to_city_request} RoadSense report(s) counted as the city's own request` : "",
-    dq.completed_without_timestamp ? `${dq.completed_without_timestamp} completed without a completion date (no repair time)` : "",
-    dq.missing_reported_timestamp ? `${dq.missing_reported_timestamp} without a report date` : "",
-    dq.inconsistent_timestamps ? `${dq.inconsistent_timestamps} with completion before the report (excluded)` : "",
-    `acknowledgement dates on ${dq.acknowledged_timestamps || 0} record(s), inspection dates on ${dq.inspection_timestamps || 0}`,
-  ].filter(Boolean);
-  view.innerHTML = `${caveat}
-    <form class="card card-body toolbar" id="eq-filters" style="gap:10px">
-      <label class="small muted">From <input class="input input-sm" type="date" name="start" value="${esc(params.get("start") || "")}"></label>
-      <label class="small muted">To <input class="input input-sm" type="date" name="end" value="${esc(params.get("end") || "")}"></label>
-      ${sel("category", "Damage", opts.categories)}${sel("road_class", "Road class", opts.road_classes)}${sel("authority", "Authority", opts.authorities)}${sel("neighbourhood", "Neighbourhood", opts.neighbourhoods)}
-      <label class="small muted">Source <select class="input input-sm" name="source"><option value="">All</option><option value="city_sr" ${params.get("source") === "city_sr" ? "selected" : ""}>City service requests</option><option value="roadsense" ${params.get("source") === "roadsense" ? "selected" : ""}>RoadSense reports</option></select></label>
-      <button class="btn btn-sm btn-primary" type="submit">Apply</button><a class="btn btn-sm btn-ghost" href="#/equity">Reset</a>
-    </form>
-    <div class="grid kpis section">
-      <div class="card kpi"><div class="label">Service requests<span class="ic blue">${icon("inbox")}</span></div><div class="value">${o.requests}</div><div class="hint">${esc(d.sources.join(" + ") || "–")}</div></div>
-      <div class="card kpi"><div class="label">Completed repairs<span class="ic green">${icon("check")}</span></div><div class="value">${o.completed}</div><div class="hint">${o.repair.n} with both dates</div></div>
-      <div class="card kpi"><div class="label">Unresolved<span class="ic amber">${icon("clock")}</span></div><div class="value">${o.unresolved}</div><div class="hint">Still open</div></div>
-      <div class="card kpi"><div class="label">Median repair time<span class="ic violet">${icon("wrench")}</span></div><div class="value">${o.repair.median != null ? Number(o.repair.median).toFixed(1) : "–"}</div><div class="hint">days · average ${days(o.repair.mean)}</div></div>
-      <div class="card kpi"><div class="label">Longest medians<span class="ic red">${icon("alert")}</span></div><div class="small" style="margin-top:8px">${d.longest.length ? d.longest.map((x) => `<div><b>${esc(x.neighbourhood)}</b> ${days(x.median)} <span class="muted">n=${x.n}</span></div>`).join("") : `<span class="muted">Not enough data per neighbourhood</span>`}</div></div>
-    </div>
-    <div class="callout blue section">${icon("alert")}<div><b>Data quality:</b> ${quality.map(esc).join(" · ")}. Response, inspection and repair times are separate measures, each computed only where both dates exist.</div></div>
-    <div class="grid two section">
-      <div class="card"><div class="card-head"><h2>Median repair time by neighbourhood</h2></div><div class="card-body">${repairBars(rows.filter((r) => r.neighbourhood !== "Unassigned"), o.repair.median)}</div></div>
-      <div class="card"><div class="card-head"><h2>Other timings</h2><span class="desc">Only where the records carry the dates</span></div><div class="card-body"><div class="facts">
-        <div class="fact"><div class="k">Response (to acknowledged)</div><div class="v">${days(o.response.median)}</div><div class="muted small">n=${o.response.n}</div></div>
-        <div class="fact"><div class="k">Inspection</div><div class="v">${days(o.inspection.median)}</div><div class="muted small">n=${o.inspection.n}</div></div>
-        <div class="fact"><div class="k">Repair (to completed)</div><div class="v">${days(o.repair.median)}</div><div class="muted small">n=${o.repair.n}</div></div>
-        <div class="fact"><div class="k">Fastest / slowest</div><div class="v small">${days(o.repair.min)} / ${days(o.repair.max)}</div></div></div></div></div>
-    </div>
-    <div class="card section"><div class="card-head"><h2>Neighbourhood comparison</h2><span class="desc">Each neighbourhood against the rest of the city · at least ${d.rules.min_sample} completed repairs on both sides, median ≥ ${d.rules.min_ratio}× and Mann-Whitney p &lt; ${d.rules.alpha}</span></div>
-      <div class="table-wrap"><table class="table"><thead><tr><th>Neighbourhood</th><th>Requests</th><th>Completed</th><th>Unresolved</th><th>Median repair</th><th>Average repair</th><th>Comparison</th><th>Similar damage</th><th></th></tr></thead><tbody>
-      ${rows.map((r) => `<tr><td><b>${esc(r.neighbourhood)}</b>${r.insufficient_data ? `<div class="muted small">insufficient data (n=${r.repair.n})</div>` : ""}</td><td>${r.requests}</td><td>${r.completed}</td><td>${r.unresolved}</td>
-        <td class="mono">${days(r.repair.median)}</td><td class="mono">${days(r.repair.mean)}</td><td>${comparePill(r.comparison)}${r.comparison.status === "possible_difference" ? `<div class="muted small">${r.comparison.ratio}× the rest · ${pval(r.comparison.p_value)}</div>` : ""}</td>
-        <td class="small">${r.holds_within_similar_damage == null ? `<span class="muted">not enough</span>` : r.holds_within_similar_damage ? "also within a damage type" : "not within damage types"}</td>
-        <td><button class="btn btn-sm btn-ghost" data-hood="${esc(r.neighbourhood)}">Records</button></td></tr>
-        ${r.comparison.status === "possible_difference" ? `<tr><td colspan="9" class="small muted">Could be explained by: pothole share ${pct(r.context.pothole_share)} here vs ${pct(r.context.pothole_share_city)} city-wide · road classes ${esc(Object.entries(r.context.road_classes).map(([k, v]) => `${k} ${v}`).join(", "))} · ${pct(r.context.missing_timestamp_share)} with missing dates${r.context.severe_share != null ? ` · ${pct(r.context.severe_share)} severe (RoadSense reports)` : ""} · request volume ${r.context.requests}, repair complexity and crew availability are not in the data.</td></tr>` : ""}`).join("")}</tbody></table></div>
-      <div id="eq-records"></div></div>
-    <div class="card section"><div class="card-head"><h2>Like with like</h2><span class="desc">The same comparison within each damage category and road class</span></div>
-      <div class="table-wrap"><table class="table compact"><thead><tr><th>Damage</th><th>Road class</th><th>Records</th><th>Neighbourhoods</th></tr></thead><tbody>
-      ${d.similar_damage.map((s) => `<tr><td>${esc(s.category)}</td><td>${esc(s.road_class)}</td><td>${s.records} <span class="muted small">(${s.completed} completed)</span></td>
-        <td class="small">${s.neighbourhoods.map((c) => `<div>${esc(c.neighbourhood)}: ${comparePill(c)} ${c.median != null ? `<span class="mono">${days(c.median)}</span>` : ""} <span class="muted">n=${c.n}</span></div>`).join("")}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">No records.</td></tr>`}</tbody></table></div></div>`;
-  $("#eq-filters", view).onsubmit = (e) => {
-    e.preventDefault();
-    const p = new URLSearchParams([...new FormData(e.target)].filter(([, v]) => v));
-    location.hash = `#/equity${p.toString() ? `?${p}` : ""}`;
-  };
-  $$("button[data-hood]", view).forEach((b) => b.onclick = async () => {
-    const p = new URLSearchParams(q); p.delete("neighbourhood"); p.set("neighbourhood", b.dataset.hood);
-    const box = $("#eq-records", view);
-    box.innerHTML = `<div class="card-body muted">Loading…</div>`;
-    try {
-      const recs = await api(`/api/equity/records?${p}`);
-      box.innerHTML = `<div class="card-body"><h3 class="h3">${esc(b.dataset.hood)}: ${recs.length} record(s)</h3><div class="table-wrap" style="max-height:420px;overflow:auto"><table class="table compact"><thead><tr><th>Request</th><th>Source</th><th>Damage</th><th>Road class</th><th>Reported</th><th>Completed</th><th>Repair</th><th>Status</th></tr></thead><tbody>
-        ${recs.map((r) => `<tr><td class="mono small">${esc(r.id)}</td><td class="small">${esc(r.source)}</td><td>${esc(r.category)}</td><td>${esc(r.road_class)}</td><td class="small">${r.reported_at ? esc(new Date(r.reported_at).toLocaleDateString()) : "–"}</td><td class="small">${r.completed_at ? esc(new Date(r.completed_at).toLocaleDateString()) : "–"}</td><td class="mono">${days(r.repair_days)}</td><td>${esc(r.status)}</td></tr>`).join("")}</tbody></table></div>
-        <div class="muted small" style="margin-top:6px">Neighbourhood evidence: ${esc([...new Set(recs.map((r) => r.neighbourhood_source))].join("; "))}. No driver or trip information is shown.</div></div>`;
-      box.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    } catch (e) { box.innerHTML = `<div class="card-body">${esc(e.message)}</div>`; }
-  });
-}
-
 /* ---------- Users (admin) ---------- */
 async function renderUsers() {
   const view = stage();
@@ -1957,7 +1858,7 @@ const palette = {
   el: $("#palette"), q: $("#palette-q"), list: $("#palette-list"), pending: [], items: [], sel: 0, opener: null,
   commands() {
     const nav = [["overview", "grid"], ["trips", "video"], ["review", "inbox"], ["reports", "file"], ["map", "map"],
-      ["conditions", "activity"], ["risk", "alert"], ["equity", "wrench"], ["activity", "activity"], ["standards", "clock"], ["authorities", "building"], ["system", "shield"],
+      ["conditions", "activity"], ["risk", "alert"], ["activity", "activity"], ["standards", "clock"], ["authorities", "building"], ["system", "shield"],
       ...(can("admin") ? [["users", "user"]] : [])]
       .map(([r, ic]) => ({ group: "Go to", label: ROUTES[r][0], hint: ROUTES[r][1], icon: ic, run: () => (location.hash = `#/${r}`) }));
     const acts = [

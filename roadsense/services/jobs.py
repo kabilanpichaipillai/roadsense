@@ -136,7 +136,7 @@ class Worker:
     # ---- execution ----
     async def execute(self, job: dict):
         from ..agents import orchestrator
-        from ..core import equity, exposure, external, forecast, privacy
+        from ..core import exposure, external, forecast, privacy
         from ..mcp_servers import municipality_server
 
         kind, args, use_llm = job["kind"], job["args"] or {}, settings.llm_enabled
@@ -176,10 +176,7 @@ class Worker:
                 return result
         if kind == "score_exposure":
             with session() as conn:
-                result = exposure.run(conn, actor=job.get("actor") or "scheduler")
-                equity.records(conn)  # (re)assign neighbourhoods from evidence already held
-                result["neighbourhoods"] = equity.resolve_missing(conn)
-                return result
+                return exposure.run(conn, actor=job.get("actor") or "scheduler")
         raise ValueError(f"unknown job kind {kind!r}")
 
     def recover(self) -> int:

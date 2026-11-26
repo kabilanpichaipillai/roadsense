@@ -1,9 +1,8 @@
-"""Exposure-weighted risk (OSM infrastructure near a defect) and the Repair Equity Audit (repair times by neighbourhood).
+"""Exposure-weighted risk (OSM infrastructure near a defect).
 
-OpenStreetMap (Overpass) and the city's ArcGIS layer are never called: tests hand the code an httpx.MockTransport.
+OpenStreetMap (Overpass) is never called: tests hand the code an httpx.MockTransport.
 """
 import json
-from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -11,7 +10,7 @@ from conftest import add_event
 from fastapi.testclient import TestClient
 
 from roadsense.common.db import session
-from roadsense.core import equity, exposure, external, reports
+from roadsense.core import exposure, reports
 
 AUTH = {"Authorization": "Bearer test-token"}
 HRM = "Halifax Regional Municipality"
@@ -249,195 +248,13 @@ def test_batch_scoring_and_listing_filters(edb):
         assert len(exposure.listing(conn, neighbourhood="Unassigned")["reports"]) == 2
 
 
-# ---------------- repair equity ----------------
-T0 = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
-
-
-def city_sr(conn, rid, days=None, lat=LAT, lon=LON, reported=T0, kind="Pothole", raw=None, status=None):
-    closed = reported + timedelta(days=days) if days is not None else None
-    external._store(conn, {"id": f"city:{rid}", "source": "city_sr", "kind": kind,
-                           "status": status or ("closed" if days is not None else "open"), "lat": lat, "lon": lon,
-                           "description": kind, "reported_at": reported.isoformat(),
-                           "closed_at": closed.isoformat() if closed else None, "raw": raw or {}})
-
-
-def suburb(conn, lat, lon, name):
-    conn.execute("INSERT OR REPLACE INTO geocache (key, value) VALUES (?, ?)",
-                 (f"v3:{lat:.4f},{lon:.4f}", json.dumps({"suburb": name, "road_class": "residential",
-                                                          "source": "openstreetmap_nominatim"})))
-
-
-def by_id(recs):
-    return {r["id"]: r for r in recs}
-
-
-def test_neighbourhood_comes_from_evidence(db):
-    with session() as conn:
-        city_sr(conn, 1, 5, raw={"COMMUNITY": "DARTMOUTH"})
-        suburb(conn, LAT + 0.01, LON, "North End")
-        city_sr(conn, 2, 5, lat=LAT + 0.01)
-        recs = by_id(equity.records(conn)[0])
-        stored = dict(conn.execute("SELECT * FROM neighbourhood_assignments WHERE record_id = 'city:1'").fetchone())
-    assert recs["city:1"]["neighbourhood"] == "Dartmouth" and "COMMUNITY" in recs["city:1"]["neighbourhood_source"]
-    assert recs["city:2"]["neighbourhood"] == "North End" and "OpenStreetMap" in recs["city:2"]["neighbourhood_source"]
-    assert stored["neighbourhood"] == "Dartmouth"
-
-
-def test_records_without_evidence_are_unassigned(db):
-    with session() as conn:
-        city_sr(conn, 1, 5, lat=LAT + 0.2)
-        # the offline fixture's place has no suburb and is not OSM evidence
-        conn.execute("INSERT INTO geocache (key, value) VALUES (?, ?)", (f"v3:{LAT + 0.3:.4f},{LON:.4f}", json.dumps(
-            {"suburb": "Somewhere", "source": "offline_fixture"})))
-        city_sr(conn, 2, 5, lat=LAT + 0.3)
-        recs = by_id(equity.records(conn)[0])
-        s = equity.summary(conn)
-    assert recs["city:1"]["neighbourhood"] == recs["city:2"]["neighbourhood"] == "Unassigned"
-    assert s["data_quality"]["unassigned_neighbourhood"] == 2
-    assert s["neighbourhoods"][0]["comparison"]["status"] == "not_compared"
-
-
-def test_repair_response_and_inspection_times_are_kept_apart(db):
-    with session() as conn:
-        city_sr(conn, 1, 10, raw={"DateAcknowledged": int((T0 + timedelta(days=1)).timestamp() * 1000),
-                                  "InspectionDate": (T0 + timedelta(days=3)).isoformat()})
-        city_sr(conn, 2, 4, reported=T0 + timedelta(hours=1))
-        recs = by_id(equity.records(conn)[0])
-    a = recs["city:1"]
-    assert (a["repair_days"], a["response_days"], a["inspection_days"]) == (10.0, 1.0, 3.0)
-    assert recs["city:2"]["response_days"] is None  # no acknowledgement timestamp: no response time
-
-
-def test_missing_completion_timestamp_and_unresolved(db):
-    with session() as conn:
-        city_sr(conn, 1, None, status="closed")  # closed, but no closing date
-        city_sr(conn, 2, None, reported=T0 + timedelta(hours=1))  # still open
-        recs, quality = equity.records(conn)
-    r = by_id(recs)
-    assert r["city:1"]["status"] == "completed" and r["city:1"]["repair_days"] is None
-    assert r["city:2"]["status"] == "unresolved"
-    assert quality["completed_without_timestamp"] == 1
-
-
-def test_duplicate_city_requests_count_once(db):
-    with session() as conn:
-        city_sr(conn, 1, 5)
-        city_sr(conn, 1, 5)          # synced twice: one row
-        city_sr(conn, "1b", 5)       # republished under another id: same place, time and kind
-        city_sr(conn, 2, 5, reported=T0 + timedelta(days=1))
-        recs, quality = equity.records(conn)
-    assert len(recs) == 2 and quality["duplicates_removed"] == 1
-
-
-def test_average_and_median_repair_time(db):
-    with session() as conn:
-        for i, d in enumerate([1, 2, 3, 10]):
-            city_sr(conn, i, d, reported=T0 + timedelta(hours=i))
-        s = equity.summary(conn)
-    rep = s["overall"]["repair"]
-    assert (rep["n"], rep["mean"], rep["median"], rep["min"], rep["max"]) == (4, 4.0, 2.5, 1.0, 10.0)
-    assert rep["median"] < rep["mean"]  # one slow repair pulls the average, not the median
-
-
-def _two_neighbourhoods(conn, slow_days=20, fast_days=5, n=12, category="Pothole"):
-    suburb(conn, LAT, LON, "Area A")
-    suburb(conn, LAT + 0.01, LON, "Area B")
-    for i in range(n):
-        city_sr(conn, f"a{i}{category}", slow_days + i % 3, reported=T0 + timedelta(hours=i), kind=category)
-        city_sr(conn, f"b{i}{category}", fast_days + i % 3, lat=LAT + 0.01, reported=T0 + timedelta(hours=i),
-                kind=category)
-
-
-def test_filtering_by_neighbourhood_and_date_range(db):
-    with session() as conn:
-        _two_neighbourhoods(conn, n=4)
-        city_sr(conn, "late", 3, reported=datetime(2026, 6, 1, tzinfo=timezone.utc))
-        only_a = equity.summary(conn, neighbourhood="Area A")
-        march = equity.summary(conn, start=date(2026, 3, 1), end=date(2026, 3, 31))
-        june = equity.summary(conn, start=date(2026, 6, 1))
-        rows = equity.neighbourhood_records(conn, "Area B")
-    assert [x["neighbourhood"] for x in only_a["neighbourhoods"]] == ["Area A"]
-    assert march["overall"]["requests"] == 8 and june["overall"]["requests"] == 1
-    assert len(rows) == 4 and all("trip_id" not in r and "approved_by" not in r for r in rows)  # no driver/trip data
-
-
-def test_small_samples_are_flagged_not_compared(db):
-    with session() as conn:
-        _two_neighbourhoods(conn, n=3)
-        s = equity.summary(conn)
-    a = next(x for x in s["neighbourhoods"] if x["neighbourhood"] == "Area A")
-    assert a["insufficient_data"] and a["comparison"]["status"] == "insufficient_data"
-    assert "Too few completed repairs" in a["comparison"]["message"] and s["flagged"] == []
-
-
-def test_a_slower_neighbourhood_is_a_possible_difference_within_similar_damage(db):
-    with session() as conn:
-        _two_neighbourhoods(conn, n=12)
-        _two_neighbourhoods(conn, slow_days=6, fast_days=6, n=12, category="Crack")  # no difference for cracks
-        s = equity.summary(conn)
-    a = next(x for x in s["neighbourhoods"] if x["neighbourhood"] == "Area A")
-    assert a["comparison"]["status"] == "possible_difference" and s["flagged"] == ["Area A"]
-    assert a["comparison"]["p_value"] < 0.05 and a["comparison"]["ratio"] >= 1.25
-    pothole = next(x for x in s["similar_damage"] if x["category"] == "Pothole")
-    crack = next(x for x in s["similar_damage"] if x["category"] == "Crack")
-    assert next(c for c in pothole["neighbourhoods"] if c["neighbourhood"] == "Area A")["status"] == "possible_difference"
-    assert all(c["status"] == "no_clear_difference" for c in crack["neighbourhoods"])
-    assert a["holds_within_similar_damage"] is True
-    assert a["context"]["pothole_share"] == 0.5 and "not proof" in s["caveat"]
-    assert s["longest"][0]["neighbourhood"] == "Area A"
-
-
-def test_mann_whitney_sanity():
-    assert equity.mann_whitney_p([1, 2, 3, 4, 5] * 3, [1, 2, 3, 4, 5] * 3) == 1.0
-    assert equity.mann_whitney_p([20, 21, 22, 23] * 3, [1, 2, 3, 4] * 3) < 0.001
-
-
-def test_roadsense_reports_count_once_with_their_city_request(db):
-    from roadsense.core import repair
-
-    rep = report("rs1")
-    rep2 = report("rs2", lat=LAT + 0.02)
-    with session() as conn:
-        for r in (rep, rep2):
-            reports.set_status(conn, r["id"], "submitted", "test", service_request_id=f"sr{r['id']}")
-            reports.set_status(conn, r["id"], "fixed", "test")
-            repair.mark_awaiting(conn, r["id"], "test")
-        city_sr(conn, "linked", 3)
-        conn.execute("UPDATE external_requests SET report_id = ? WHERE id = 'city:linked'", (rep["id"],))
-        recs, quality = equity.records(conn)
-    kinds = sorted(r["record_kind"] for r in recs)
-    assert kinds == ["city_sr", "roadsense"] and quality["linked_to_city_request"] == 1
-    own = next(r for r in recs if r["record_kind"] == "roadsense")
-    assert own["status"] == "completed" and own["repair_days"] is not None and own["category"] == "Pothole"
-
-
-# ---------------- 24. the existing Cityworks/ArcGIS sync feeds the audit ----------------
-def test_city_layer_sync_feeds_the_equity_audit(db):
-    ms = lambda d: int(d.timestamp() * 1000)
-    feature = lambda rid, days, h: {"type": "Feature", "geometry": {"type": "Point", "coordinates": [LON, LAT]},
-                                    "properties": {"RequestId": rid, "Problem": "Pothole on road", "Status": "Closed",
-                                                   "InitiatedDate": ms(T0 + timedelta(hours=h)),
-                                                   "ClosedDate": ms(T0 + timedelta(hours=h, days=days)),
-                                                   "Community": "Halifax Peninsula"}}
-    body = {"type": "FeatureCollection", "features": [feature("SR-1", 7, 0), feature("SR-2", 9, 2)]}
-    client = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(200, json=body)))
-    with session() as conn:
-        res = external.sync_city_requests(conn, layer_url="https://city.example/FeatureServer/0", client=client)
-        again = external.sync_city_requests(conn, layer_url="https://city.example/FeatureServer/0", client=client)
-        s = equity.summary(conn)
-    assert res["added"] == 2 and again["added"] == 0 and again["updated"] == 2  # re-sync does not duplicate
-    assert s["overall"]["completed"] == 2 and s["overall"]["repair"]["median"] == 8.0
-    assert s["neighbourhoods"][0]["neighbourhood"] == "Halifax Peninsula"
-
-
 # ---------------- API and scheduler ----------------
-def test_risk_and_equity_api(edb):
+def test_risk_api(edb):
     from roadsense.services import agent_api
 
     rep = report("x")
     with session() as conn:
         exposure.compute(conn, rep, OSM([node(9, 5, highway="bus_stop")]).client)
-        city_sr(conn, 1, 5, raw={"Community": "Fairview"})
     c = TestClient(agent_api.app)
     assert c.get("/risk").status_code == 401
     listing = c.get("/risk", headers=AUTH).json()
@@ -445,10 +262,6 @@ def test_risk_and_equity_api(edb):
     assert c.get("/risk?category=extreme", headers=AUTH).status_code == 400
     detail = c.get(f"/reports/{rep['id']}", headers=AUTH).json()
     assert detail["risk"]["features"][0]["category"] == "bus_stop" and detail["risk"]["physical_score"] > 0
-    eq = c.get("/equity?start=2026-01-01", headers=AUTH).json()
-    assert eq["overall"]["requests"] == 1 and eq["neighbourhoods"][0]["neighbourhood"] == "Fairview"
-    assert c.get("/equity?start=03-2026", headers=AUTH).status_code == 400
-    assert len(c.get("/equity/records?neighbourhood=Fairview", headers=AUTH).json()) == 1
     viewer = {**AUTH, "X-RoadSense-User": "v@roadsense.test", "X-RoadSense-Role": "viewer"}
     assert c.post("/risk/run", headers=viewer).status_code == 403
 
