@@ -288,7 +288,7 @@ CREATE TRIGGER IF NOT EXISTS repair_verifications_no_update BEFORE UPDATE ON rep
 BEGIN SELECT RAISE(ABORT, 'verification history is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS repair_verifications_no_delete BEFORE DELETE ON repair_verifications
 BEGIN SELECT RAISE(ABORT, 'verification history is append-only'); END;
--- ---- exposure-weighted risk (per report) and repair equity ----
+-- ---- exposure-weighted risk (per report) ----
 -- OSM features near a report, one row per OSM element (an element is counted once, in one category)
 CREATE TABLE IF NOT EXISTS exposure_features (
     report_id INTEGER NOT NULL REFERENCES reports (id) ON DELETE CASCADE,
@@ -322,16 +322,6 @@ CREATE TABLE IF NOT EXISTS report_risk (
     computed_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS report_risk_category ON report_risk (category, overall_score);
--- which neighbourhood a repair record (a city service request or a RoadSense report) belongs to, and on what evidence
-CREATE TABLE IF NOT EXISTS neighbourhood_assignments (
-    record_kind TEXT NOT NULL,
-    record_id TEXT NOT NULL,
-    neighbourhood TEXT,
-    source TEXT NOT NULL,
-    assigned_at TEXT NOT NULL,
-    PRIMARY KEY (record_kind, record_id)
-);
-CREATE INDEX IF NOT EXISTS neighbourhood_assignments_name ON neighbourhood_assignments (neighbourhood);
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
 BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit

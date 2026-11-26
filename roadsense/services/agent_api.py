@@ -33,7 +33,6 @@ from ..common.metrics import metrics
 from ..common.schemas import DamageEvent, RoadPass
 from ..core import (
     condition,
-    equity,
     exposure,
     external,
     forecast,
@@ -514,7 +513,7 @@ async def forecast_run(force: bool = False, wait: bool = True, who: Actor = Depe
     return await worker.wait(job_id, 120) if wait else {"job_id": job_id, "status": "queued"}
 
 
-# ---------- exposure-weighted risk and repair equity ----------
+# ---------- exposure-weighted risk ----------
 @app.get("/risk", dependencies=AUTH)
 def risk_listing(category: str | None = None, damage: str | None = None, neighbourhood: str | None = None,
                  road_class: str | None = None, infrastructure: str | None = None):
@@ -542,35 +541,6 @@ async def risk_run(wait: bool = True, who: Actor = Depends(actor)):
     who.need(REVIEW_ROLES)
     job_id = worker.submit("score_exposure", actor=who.name)
     return await worker.wait(job_id, 120) if wait else {"job_id": job_id, "status": "queued"}
-
-
-def _equity_filters(start: str | None, end: str | None, category, road_class, authority, neighbourhood, source):
-    from datetime import date
-
-    try:
-        return {"start": date.fromisoformat(start) if start else None, "end": date.fromisoformat(end) if end else None,
-                "category": category, "road_class": road_class, "authority": authority,
-                "neighbourhood": neighbourhood, "source": source if source in ("city_sr", "roadsense") else None}
-    except ValueError as e:
-        raise HTTPException(400, "dates must be YYYY-MM-DD") from e
-
-
-@app.get("/equity", dependencies=AUTH)
-def equity_summary(start: str | None = None, end: str | None = None, category: str | None = None,
-                   road_class: str | None = None, authority: str | None = None, neighbourhood: str | None = None,
-                   source: str | None = None):
-    """Repair Equity Audit: repair times by neighbourhood, aggregated. Flags are possible differences, not findings."""
-    with session() as conn:
-        return equity.summary(conn, **_equity_filters(start, end, category, road_class, authority, neighbourhood,
-                                                      source))
-
-
-@app.get("/equity/records", dependencies=AUTH)
-def equity_records(neighbourhood: str, start: str | None = None, end: str | None = None, category: str | None = None,
-                   road_class: str | None = None, authority: str | None = None, source: str | None = None):
-    f = _equity_filters(start, end, category, road_class, authority, None, source)
-    with session() as conn:
-        return equity.neighbourhood_records(conn, neighbourhood, **{k: v for k, v in f.items() if k != "neighbourhood"})
 
 
 # ---------- city requests and third-party feeds ----------
