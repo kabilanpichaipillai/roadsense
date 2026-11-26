@@ -371,8 +371,11 @@ def report_detail(report_id: int, who: Actor = Depends(actor)):
         verification = repair.summary(conn, r)
         risk = exposure.detail(conn, report_id)
         target = service_standards.target(conn, r)
+        inspector = row(conn.execute("SELECT id, email, name, role FROM users WHERE id = ?",
+                                     (r["inspector_id"],)).fetchone()) if r.get("inspector_id") else None
     r = public_report(r, who)  # the service-standard target below is the one deadline source
     r["service_target"] = target
+    r["inspector"] = inspector
     p = open311.build_payload(r)
     return {"report": r, "events": events, "trail": trail, "payload": p, "payload_hash": open311.payload_hash(p),
             "deliveries": deliveries, "external": matches, "deterioration": trend, "verification": verification,
@@ -436,6 +439,86 @@ async def approve(report_id: int, payload_hash: str = Body(..., embed=True), who
 def reject(report_id: int, body: dict | None = Body(None), who: Actor = Depends(actor)):
     with session() as conn:
         return move(conn, report_id, "reject", who, reason=(body or {}).get("reason"))
+
+
+@app.post("/reports/{report_id}/assign", dependencies=AUTH)
+def assign(report_id: int, inspector_id: int | str | None = Body(None, embed=True), who: Actor = Depends(actor)):
+    """Assign (or re-assign) the road inspector who will go and look."""
+    with session() as conn:
+        return move(conn, report_id, "assign", who, inspector_id=inspector_id)
+
+
+async def _photo(upload: UploadFile | None, kind: str) -> str | None:
+    """Store an optional staff photo (core.privacy.store_staff_photo) and return its reference."""
+    if upload is None or not upload.filename:
+        return None
+    data = await upload.read(privacy.MAX_PHOTO_BYTES + 1)
+    try:
+        ref, info = privacy.store_staff_photo(data, kind)
+    except privacy.PhotoError as e:
+        raise HTTPException(e.status, e.message) from e
+    with session() as conn:
+        audit(conn, "service", "photo_stored", f"photo:{ref}", info)
+    return ref
+
+
+def _drop_photo(ref: str | None) -> None:
+    if ref:
+        privacy.photo_path(ref.partition(":")[2]).unlink(missing_ok=True)
+
+
+def _move_with_photo(report_id: int, action: str, who: Actor, ref: str | None, **fields) -> dict:
+    try:
+        with session() as conn:
+            return move(conn, report_id, action, who, photo=ref, **fields)
+    except HTTPException:
+        _drop_photo(ref)  # a refused step keeps no orphan photo
+        raise
+
+
+@app.post("/reports/{report_id}/inspection", dependencies=AUTH)
+async def inspection(report_id: int, outcome: str = Form(...), repair_eta: str = Form(""),
+                     severity_band: str = Form(""), notes: str = Form(""), photo: UploadFile | None = File(None),
+                     who: Actor = Depends(actor)):
+    """The inspector's outcome: repair_needed (with the estimated repair date) or no_repair_needed."""
+    if outcome not in ("repair_needed", "no_repair_needed"):
+        raise HTTPException(422, "outcome must be repair_needed or no_repair_needed")
+    ref = await _photo(photo, "inspection")
+    extra = {"repair_eta": repair_eta, "severity_band": severity_band} if outcome == "repair_needed" else {}
+    return _move_with_photo(report_id, outcome, who, ref, notes=notes, **extra)
+
+
+@app.post("/reports/{report_id}/repaired", dependencies=AUTH)
+async def repaired(report_id: int, notes: str = Form(""), photo: UploadFile | None = File(None),
+                   who: Actor = Depends(actor)):
+    """The repair is done (the crew's claim). RoadSense then checks the spot on later trips on its own."""
+    ref = await _photo(photo, "repair")
+    return _move_with_photo(report_id, "repaired", who, ref, notes=notes)
+
+
+@app.post("/reports/{report_id}/reopen", dependencies=AUTH)
+def reopen(report_id: int, reason: str = Body("", embed=True), who: Actor = Depends(actor)):
+    with session() as conn:
+        return move(conn, report_id, "reopen", who, reason=reason)
+
+
+@app.patch("/reports/{report_id}/eta", dependencies=AUTH)
+def reschedule(report_id: int, body: dict = Body(...), who: Actor = Depends(actor)):
+    """A new estimated repair date (the old and new dates are kept in the ledger)."""
+    with session() as conn:
+        return move(conn, report_id, "reschedule", who, repair_eta=body.get("repair_eta"), reason=body.get("reason"))
+
+
+@app.get("/photos/{photo_id}.jpg", dependencies=AUTH)
+def photo_file(photo_id: str):
+    """An inspection or repair photo (service token only; the web app serves it to signed-in staff)."""
+    try:
+        path = privacy.photo_path(photo_id)
+    except privacy.PhotoError as e:
+        raise HTTPException(e.status, e.message) from e
+    if not path.is_file():
+        raise HTTPException(404, "not found")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.post("/reports/{report_id}/class", dependencies=AUTH)

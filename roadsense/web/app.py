@@ -108,7 +108,8 @@ def http() -> httpx.Client:
 def agent(method: str, path: str, user: dict | None = None, **kw):
     headers = {"Authorization": f"Bearer {settings.api_token}"}
     if user:
-        headers.update({"X-RoadSense-User": user["email"], "X-RoadSense-Role": user["role"]})
+        headers.update({"X-RoadSense-User": user["email"], "X-RoadSense-Role": user["role"],
+                        "X-RoadSense-User-Id": str(user["id"])})
     try:
         r = http().request(method, settings.agent_api_url.rstrip("/") + path, headers=headers,
                            timeout=kw.pop("timeout", 60), **kw)
@@ -131,19 +132,25 @@ def overview():
     stats = agent("GET", "/stats")
     reports = agent("GET", "/reports")
     trips = agent("GET", "/trips")[:6]
+    reports = [{k: r.get(k) for k in ("id", "class_name", "address", "jurisdiction", "status", "status_label",
+                                      "confirmations", "lat", "lon", "overdue", "repair_eta", "closed_reason",
+                                      "verification_status")} for r in reports]
     activity = [a for a in agent("GET", "/audit", params={"limit": 400})
-                if a["action"].startswith(("verdict_", "report_", "status_", "trip_done"))][:12]
+                if a["action"].startswith(("verdict_", "report_", "ledger_workflow_", "trip_done"))][:12]
     return {"stats": stats, "reports": reports, "trips": trips, "activity": activity}
 
 
 @app.get("/api/reports")
-def reports(status: str | None = None):
-    return agent("GET", "/reports", params={"status": status} if status else None)
+def reports(request: Request, status: str | None = None, inspector_id: str | None = None, overdue: bool = False):
+    """Every report, with what the signed-in person may do next. inspector_id=me: my inspections."""
+    params = {k: v for k, v in (("status", status), ("inspector_id", inspector_id),
+                                ("overdue", "true" if overdue else None)) if v}
+    return agent("GET", "/reports", request.state.user, params=params or None)
 
 
 @app.get("/api/reports/{report_id}")
-def report(report_id: int):
-    return agent("GET", f"/reports/{report_id}")
+def report(report_id: int, request: Request):
+    return agent("GET", f"/reports/{report_id}", request.state.user)
 
 
 @app.get("/api/trips")
@@ -152,8 +159,9 @@ def trips():
 
 
 @app.get("/api/trips/{trip_id}")
-def trip(trip_id: str):
-    return {"events": agent("GET", f"/trips/{trip_id}/events"), "reports": agent("GET", f"/trips/{trip_id}/reports")}
+def trip(trip_id: str, request: Request):
+    return {"events": agent("GET", f"/trips/{trip_id}/events"),
+            "reports": agent("GET", f"/trips/{trip_id}/reports", request.state.user)}
 
 
 @app.get("/api/activity")
@@ -330,8 +338,56 @@ def approve(report_id: int, request: Request, body: dict = Body(...)):
 
 
 @app.post("/api/reports/{report_id}/reject")
-def reject(report_id: int, request: Request):
-    return agent("POST", f"/reports/{report_id}/reject", need(request, "review"))
+def reject(report_id: int, request: Request, body: dict | None = Body(None)):
+    return agent("POST", f"/reports/{report_id}/reject", need(request, "review"),
+                 json={"reason": str((body or {}).get("reason") or "")[:500]})
+
+
+@app.post("/api/reports/{report_id}/assign")
+def assign(report_id: int, request: Request, body: dict = Body(...)):
+    return agent("POST", f"/reports/{report_id}/assign", need(request, "review"),
+                 json={"inspector_id": body.get("inspector_id")})
+
+
+MAX_PHOTO_BYTES = 5 * 1024 * 1024
+
+
+async def _photo_file(photo: UploadFile | None) -> dict | None:
+    if photo is None or not photo.filename:
+        return None
+    data = await photo.read(MAX_PHOTO_BYTES + 1)
+    if len(data) > MAX_PHOTO_BYTES:
+        raise HTTPException(413, "photo larger than 5 MB")
+    return {"photo": (Path(photo.filename).name[:80], data, photo.content_type or "application/octet-stream")}
+
+
+@app.post("/api/reports/{report_id}/inspection")
+async def inspection(report_id: int, request: Request, outcome: str = Form(...), repair_eta: str = Form(""),
+                     severity_band: str = Form(""), notes: str = Form(""), photo: UploadFile | None = File(None)):
+    """The inspector's outcome, with an optional photo (JPEG/PNG, 5 MB; re-encoded and privacy-checked)."""
+    user = need(request, "inspect")
+    return agent("POST", f"/reports/{report_id}/inspection", user, files=await _photo_file(photo),
+                 data={"outcome": outcome, "repair_eta": repair_eta, "severity_band": severity_band,
+                       "notes": notes[:1000]})
+
+
+@app.post("/api/reports/{report_id}/repaired")
+async def repaired(report_id: int, request: Request, notes: str = Form(""), photo: UploadFile | None = File(None)):
+    user = need(request, "inspect")
+    return agent("POST", f"/reports/{report_id}/repaired", user, files=await _photo_file(photo),
+                 data={"notes": notes[:1000]})
+
+
+@app.post("/api/reports/{report_id}/reopen")
+def reopen(report_id: int, request: Request, body: dict = Body(...)):
+    return agent("POST", f"/reports/{report_id}/reopen", need(request, "inspect"),
+                 json={"reason": str(body.get("reason") or "")[:500]})
+
+
+@app.patch("/api/reports/{report_id}/eta")
+def reschedule(report_id: int, request: Request, body: dict = Body(...)):
+    return agent("PATCH", f"/reports/{report_id}/eta", need(request, "inspect"),
+                 json={"repair_eta": body.get("repair_eta"), "reason": str(body.get("reason") or "")[:500]})
 
 
 @app.post("/api/reports/{report_id}/class")
@@ -391,6 +447,17 @@ def pass_media(pass_id: str):
     ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
     return Response(buf.tobytes(), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
 
+
+
+@app.get("/api/media/photo/{photo_id}.jpg")
+def staff_photo(photo_id: str):
+    """An inspection or repair photo, stored re-encoded and privacy-checked by the agent service."""
+    if not photo_id.isalnum():
+        raise HTTPException(400, "bad id")
+    path = settings.media_dir / f"photo-{photo_id}.jpg"
+    if not path.is_file():
+        raise HTTPException(404, "not found")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.get("/api/media/{event_id}.jpg")
