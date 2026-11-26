@@ -315,3 +315,24 @@ def test_forwarding_refers_only_roads_another_authority_owns(staff, forwarding, 
         own_clock = conn.execute("SELECT authority FROM service_clocks WHERE report_id = ?", (own,)).fetchone()
     assert (r["status"], r["closed_reason"]) == ("closed", "referred") and workflow.label(r) == "Closed (Referred)"
     assert clock[0] == "Nova Scotia Public Works" and own_clock[0] == HRM
+
+
+def test_metrics_count_statuses_overdue_reopens_and_time_to_repair(staff):
+    a, b = new_report(), new_report()
+    with session() as conn:
+        for rid in (a, b):
+            workflow.transition(conn, rid, "approve", "rev", "reviewer", at="2026-11-02T12:00:00+00:00")
+            workflow.transition(conn, rid, "assign", "rev", "reviewer", inspector_id=staff["insp_id"],
+                                at="2026-11-02T13:00:00+00:00")
+            workflow.transition(conn, rid, "repair_needed", "rev", "reviewer", repair_eta="2026-11-10",
+                                at="2026-11-03T12:00:00+00:00")
+        workflow.transition(conn, a, "repaired", "rev", "reviewer", at="2026-11-06T12:00:00+00:00")
+        workflow.transition(conn, a, "reopen", "rev", "reviewer", reason="x", at="2026-11-07T12:00:00+00:00")
+        workflow.transition(conn, a, "repair_needed", "rev", "reviewer", repair_eta="2026-11-09",
+                            at="2026-11-07T13:00:00+00:00")
+        workflow.transition(conn, a, "repaired", "rev", "reviewer", at="2026-11-08T12:00:00+00:00")
+    text = api.get("/metrics", headers=AUTH).text
+    assert 'roadsense_reports{status="repaired"} 1' in text and 'roadsense_reports{status="repair_needed"} 1' in text
+    assert "roadsense_reports_overdue 1" in text  # b: due 10 Nov, still not repaired
+    assert "roadsense_report_reopens 1" in text
+    assert "roadsense_approve_to_repaired_days_median 6" in text  # a: approved 2 Nov, repaired (last) 8 Nov

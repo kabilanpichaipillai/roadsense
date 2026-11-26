@@ -1,6 +1,7 @@
 # RoadSense
 
-**AI agents that find road damage from a dashcam and get it to the road authority that can fix it.**
+**The municipality's own system for road damage: AI agents find it from a dashcam, and staff take each report from
+review through inspection to a repair that RoadSense checks on its own.**
 
 Cognizant BrAInstorm Challenge 2026 · Agentic AI for Good · tracks: Public Services, Sustainability
 
@@ -8,13 +9,37 @@ Halifax logged 3,203 pothole reports between January 1 and March 19, 2026, and s
 pothole reported several times and potholes on provincial roads it does not maintain
 ([CTV Atlantic](https://www.ctvnews.ca/atlantic/nova-scotia/article/more-potholes-in-halifax-this-year-compared-to-2024-municipality-says/)).
 RoadSense attacks exactly that: a dashcam finds the damage, and a team of AI
-agents confirms it, works out **who** is responsible, merges repeat sightings into one report, and files it once the
-driver approves.
+agents confirms it, works out **who** owns the road, and merges repeat sightings into one report. Municipal staff then
+run the rest inside RoadSense: review, inspection, a repair decision with a date, the repair, and a reopen when the
+repair did not hold. Nothing is sent anywhere by default.
 
 A dashcam video and its GPS track go through a YOLOv8m detector on the edge device (a laptop GPU). Only
 privacy-blurred frames of damage leave the vehicle. LLM agents, connected to their tools through the **Model Context
 Protocol (MCP)**, decide what each detection is, who maintains that road, whether it is already reported, and what
-the authority is told; the driver approves the exact payload; a follow-up agent tells the driver when it is fixed.
+the report says; a reviewer approves the exact payload. Only people move a report after that.
+
+## The repair workflow
+
+```
+Awaiting review ──reject──▶ Closed (Rejected)
+      │ approve
+Awaiting inspection ──assign inspector──▶ Inspection assigned ──no repair needed──▶ Closed (No repair needed)
+                                                │ repair needed (+ estimated repair date)
+                                          Repair needed ──mark repaired──▶ Repaired ──seen again / reopened──▶ Reopened
+                                                                              │ clean passes on later trips      │ new date
+                                                                     Repaired (verified)                Repair needed
+```
+
+One state machine (`roadsense/core/workflow.py`) holds the statuses, which role may take each step and what each step
+needs; it is the only code that changes a report's status, and every step is written to the report's hash-chained
+ledger with who and when. Roles: **reviewer** (approve, reject, assign, and any step), **inspector** (record the
+outcome of inspections assigned to them, mark them repaired, reopen), **admin**. A report past its estimated repair
+date is **overdue** and is flagged on lists, the map and the overview. The service-standard clock starts at approval
+and follows these steps (see [docs/service-standards.md](docs/service-standards.md)).
+
+Referral to another authority (Open311, Cityworks, ArcGIS or a referral package) is optional:
+`ROADSENSE_FORWARD_MODE=on` refers approved reports on roads another authority owns (compared with
+`ROADSENSE_MUNICIPALITY`, default Halifax Regional Municipality). It is off by default.
 
 ## Architecture
 
@@ -38,11 +63,11 @@ flowchart LR
     LOC -. unsure jurisdiction .-> AI
     WF --> TRI[Triage step: rules] --> MR[[reports MCP: dedupe / merge, drafts, notifications]]
     WF --> DRA[Drafting step] -. description .-> AI
-    APP{{Driver approves exact payload}} --> FIL2[Filing: plain code] --> MC[[municipality MCP: Open311 / referral, status]]
+    APP{{Reviewer approves exact payload}} --> WFL[[Municipal workflow: inspection, repair date, repair, reopen]]
+    APP -. forwarding on, road not ours .-> FIL2[Referral: plain code] --> MC[[municipality MCP: Open311 / referral, status]]
     FU[Follow-up: plain code] --> MC
   end
-  MC --> HRM[Halifax 311 · mock Open311]
-  MC --> NS[NS Public Works · referral package]
+  MC --> NS[Other road authorities · Open311 / referral package]
 ```
 
 ### How the AI is used
@@ -67,7 +92,7 @@ outside the candidates, is dropped and the rule decides. If the model becomes un
 | **Real damage, false alarm, or disputed?** | RT-DETR-L verification on the redacted frame, close-up re-check for confident unconfirmed detections | Can't confirm without verifier evidence; "disputed" only when the two models disagree on class. YOLOv8m's label is kept and the driver is asked. |
 | **Who maintains this road?** | OpenStreetMap road class and route number: 100-series highways → Nova Scotia Public Works; numbered routes through the city are ambiguous and the agent weighs them; local streets → HRM | Only authorities in the directory have a delivery channel |
 | **New report or another sighting of a known one?** | Open reports of the same class within 15 m of the projected position | Merging is idempotent; confirmations raise priority |
-| **What the authority is told** | Report facts: class, width band, severity, confirmations, address | Text is sanitised, and locked by hash once the driver approves |
+| **What the report says** | Report facts: class, width band, severity, confirmations, address | Text is sanitised, and locked by hash once the reviewer approves |
 | **Is it fixed?** | Authority status feed | Notifies each driver once |
 | **Is it really fixed?** | Later trips past a closed report: the defect detected again, or clean frames of the spot | The authority's status is kept; RoadSense reopens on a confident re-detection and verifies only after clean passes from 2 different trips. Blurred, dark, out-of-view or weak evidence is inconclusive |
 
@@ -221,8 +246,9 @@ research synthesis in [docs/research-synthesis.md](docs/research-synthesis.md):
 | **Pothole risk** | Freeze-thaw pothole risk forecast per road segment for the next 14 days: High/Medium/Low counts, a risk map, a filterable table with the main factors, and a page per segment with its sightings, ECCC weather and factor breakdown. A labelled heuristic, with its evaluation alongside |
 | **Exposure risk** | Each report's physical severity, exposure (cycling, pedestrian, bus and road context from OpenStreetMap) and overall risk kept as separate values, Low/Medium/High/Critical, on a map and in a table filterable by risk, damage, neighbourhood, road class and nearby infrastructure. The report page shows every factor and feature |
 | **Agent activity** | Every plan, verdict and tool call, filterable by agent and trip |
-| **Service standards** | Filed reports against each authority's published service standard (overdue, approaching, completed within target), configurable rules and holidays, and each report's hash-chained duty-of-care ledger: [docs/service-standards.md](docs/service-standards.md) |
-| **Authorities** | Halifax 311 (Open311) requests, NS Public Works referrals, Follow-up agent, driver notifications |
+| **My inspections** | An inspector's assigned reports, highest priority first, with the repair date and overdue flag |
+| **Service standards** | Approved reports against the municipality's published service standard (overdue, approaching, completed within target), configurable rules and holidays, and each report's hash-chained duty-of-care ledger: [docs/service-standards.md](docs/service-standards.md) |
+| **Authorities** | Referrals to other road authorities (only with `ROADSENSE_FORWARD_MODE=on`), driver notifications |
 | **Trust & system** | Production checklist, guardrails, privacy and retention, delivery channels, jobs and scheduler, MCP servers |
 | **Ask RoadSense** (every page) | Not a page: a button at the bottom right of every page (or Ctrl/⌘ I) opens the Road Inspection Assistant in a panel on the right, docked beside the page on wide screens. Ask in plain language ("Which potholes near schools are overdue?"). Read-only; answers are built from RoadSense records with the report ids, evidence, a map, the retrieval time and what is unknown. Follow-ups narrow the previous answer. An LLM is optional: [docs/assistant.md](docs/assistant.md) |
 | **Users** (admin) | Add people, set roles (admin, reviewer, driver, viewer), disable accounts |

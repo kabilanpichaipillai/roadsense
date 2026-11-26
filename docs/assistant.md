@@ -32,13 +32,14 @@ The assistant is not a page. An **Ask RoadSense** button sits at the bottom righ
 |---|---|---|
 | Road damage | "Show me the five most severe potholes reported in Halifax during the last 30 days" | `reports`, `events` |
 | Counts by road | "Which roads have the highest number of potholes?" | `reports` |
+| Workflow status | "Which repairs are overdue?" (past the estimated repair date), "potholes awaiting inspection", "which defects need repair", "which potholes have been repaired", "which reports are still open" | `reports` (status, `repair_eta`) |
 | Repeated damage | "Which locations have experienced repeated damage?" | trips, drivers, reopenings |
 | Deterioration | "Which road segments have both severe damage and increasing deterioration?" | `condition.deterioration` |
 | Road condition | "Which road segments are in the worst condition?" | `condition.segments` (an estimate) |
 | Repair verification | "Which completed repairs have not been independently verified?" | `repair.*`, `repair_verifications` |
 | Repair history | "Their repair history" (after a list), "repair history of #12" | `repair_verifications`, `service_clocks` |
 | Repair performance | "Average time between repair completion and defect recurrence?", "Compare repair performance across neighbourhoods" | closures and reopenings |
-| Service standards | "Which reports are overdue?", "…approaching their service deadlines?", "…waiting for an authority response?" | `service_standards.dashboard` |
+| Service standards | "Which reports are overdue against the service standard?", "…approaching their service deadlines?", "…waiting for an authority response?" | `service_standards.dashboard` |
 | Risk | "Which roads have the highest risk scores?", "High-risk roads near schools or public transport?" | `exposure.listing` |
 | Recommendations | "Which five road segments should our inspection team investigate first?" | existing risk score, deadlines, trend |
 | Freeze-thaw | "Which roads may be affected by upcoming freeze-thaw conditions?" | `forecast.latest` (a heuristic) |
@@ -177,7 +178,7 @@ Chat response:
   "metrics": [{"label": "Overdue", "value": 2, "kind": "calculated"}],
   "table": {"columns": [{"key": "report_id", "label": "Report", "kind": "observed"}], "rows": ["..."]},
   "report_refs": [12, 7], "segment_refs": [],
-  "map": {"points": [{"report_id": 12, "lat": 44.65, "lon": -63.58, "label": "Pothole #12", "status": "submitted"}]},
+  "map": {"points": [{"report_id": 12, "lat": 44.65, "lon": -63.58, "label": "Pothole #12", "status": "repair_needed"}]},
   "evidence": [{"report_id": 12, "first_seen": "…", "observations": 3, "trips": 2, "photo_event_id": "…"}],
   "warnings": [], "limitations": ["Compliance monitoring and evidence management only. …"],
   "method": "Deadlines: end of the N-th business day …", "sources": ["service_clocks", "service_standards"],

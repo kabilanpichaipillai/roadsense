@@ -61,7 +61,8 @@ class QuerySpec(BaseModel):
     classes: list[ClassCode] = Field(default_factory=list, max_length=4)
     severity: list[Severity] = Field(default_factory=list, max_length=3)
     bands: list[Band] = Field(default_factory=list, max_length=4)
-    statuses: list[ReportStatus] = Field(default_factory=list, max_length=6)
+    statuses: list[ReportStatus] = Field(default_factory=list, max_length=7)
+    overdue_repairs: bool = False  # status repair needed / reopened and the estimated repair date has passed
     verification: list[Verification] = Field(default_factory=list, max_length=3)
     service_status: list[ServiceStatus] = Field(default_factory=list, max_length=7)
     risk_category: list[RiskCategory] = Field(default_factory=list, max_length=4)
@@ -123,6 +124,8 @@ class QuerySpec(BaseModel):
             out.append("severity " + "/".join(self.severity))
         if self.statuses:
             out.append("status " + "/".join(s.replace("_", " ") for s in self.statuses))
+        if self.overdue_repairs:
+            out.append("past the estimated repair date")
         if self.verification:
             out.append("verification " + "/".join(self.verification))
         if self.service_status:

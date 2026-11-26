@@ -56,6 +56,29 @@ class Metrics:
 metrics = Metrics()
 
 
+def workflow_gauges(conn) -> dict[str, list[tuple[dict, float]]]:
+    """The municipal workflow for /metrics: reports by status, overdue repairs, reopens, and the median days from
+    approval to the repair being marked done (over reports repaired at least once)."""
+    from statistics import median
+
+    from ..core import workflow
+    from ..core.business_days import parse_ts
+
+    by = dict(conn.execute("SELECT status, COUNT(*) FROM reports GROUP BY status").fetchall())
+    due = [dict(r) for r in conn.execute("SELECT status, repair_eta FROM reports WHERE status IN ('repair_needed', "
+                                         "'reopened')")]
+    days = [(parse_ts(r[1]) - parse_ts(r[0])).total_seconds() / 86400 for r in conn.execute(
+        "SELECT approved_at, repaired_at FROM reports WHERE approved_at IS NOT NULL AND repaired_at IS NOT NULL")]
+    return {
+        "roadsense_reports": [({"status": s}, by.get(s, 0)) for s in workflow.STATUSES],
+        "roadsense_reports_overdue": [({}, sum(workflow.overdue(r) for r in due))],
+        "roadsense_report_reopens": [({}, conn.execute("SELECT COALESCE(SUM(reopen_count), 0) FROM reports")
+                                      .fetchone()[0])],
+        "roadsense_approve_to_repaired_days_median": [({}, round(median(days), 2) if days else 0)],
+        "roadsense_reports_repaired_measured": [({}, len(days))],
+    }
+
+
 def install(app, service: str) -> None:
     """Request id, structured access log and request metrics for a FastAPI app."""
 

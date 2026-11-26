@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from ..core import condition, exposure, forecast, repair, service_standards
+from ..core import condition, exposure, forecast, repair, service_standards, workflow
 from ..core.reports import CLASS_NAMES, OPEN_STATUSES
 from .spec import QuerySpec
 
@@ -148,6 +148,8 @@ def filter_reports(rows: list[dict], spec: QuerySpec, res: Result, exclude_rejec
                    date_field: str = "first_seen") -> list[dict]:
     if spec.statuses:
         rows = [x for x in rows if x["status"] in spec.statuses]
+    if spec.overdue_repairs:
+        rows = [x for x in rows if workflow.overdue(x)]
     elif exclude_rejected:
         rows = [x for x in rows if not (x["status"] == "closed" and x.get("closed_reason") == "rejected")]
     if spec.classes:
@@ -197,6 +199,7 @@ def report_row(x: dict) -> dict:
     return {"report_id": x["id"], "class_code": x["class_code"], "class_name": x["class_name"], "road": x["road"],
             "neighbourhood": x.get("neighbourhood"), "band": x.get("severity_band") or "–",
             "severity": x.get("severity"), "status": x["status"], "lifecycle": repair.lifecycle(x),
+            "repair_eta": x.get("repair_eta"), "overdue": workflow.overdue(x),
             "verification": x.get("verification_status"), "observations": x.get("observations"),
             "trips": x.get("trips"), "drivers": x.get("confirmations"), "first_seen": x.get("first_seen"),
             "priority": x.get("priority"), "lat": x.get("lat"), "lon": x.get("lon"), "evidence": evidence(x)}
@@ -228,7 +231,9 @@ REPORT_COLUMNS = [col("report_id", "Report"), col("class_name", "Damage"), col("
 
 # ---------------- intents ----------------
 def defects(m: Memo, spec: QuerySpec, scope: list[int] | None) -> Result:
-    res = Result("defects", "Road defects", "observed", columns=REPORT_COLUMNS, sources=["reports", "events"])
+    columns = REPORT_COLUMNS + ([col("repair_eta", "Estimated repair date")] if spec.overdue_repairs or set(
+        spec.statuses) & {"repair_needed", "reopened"} else [])
+    res = Result("defects", "Road defects", "observed", columns=columns, sources=["reports", "events"])
     rows = filter_reports(load_reports(m.conn, scope), spec, res)
     rows = sort_reports(rows, spec.sort or "severity")
     by_class: dict[str, int] = {}
@@ -836,6 +841,9 @@ def overview(m: Memo, spec: QuerySpec, scope: list[int] | None) -> Result:
     rk = m.risk()["summary"]
     res.metrics = [metric("Reports", len(rows)), metric("Potholes", sum(x["class_code"] == "D40" for x in rows)),
                    metric("Awaiting review", sum(x["status"] == "pending_approval" for x in rows)),
+                   metric("Awaiting inspection", sum(x["status"] in ("awaiting_inspection", "inspection_assigned")
+                                                     for x in rows)),
+                   metric("Overdue repairs", sum(workflow.overdue(x) for x in rows), "calculated"),
                    metric("Overdue (service standard)", std.get("overdue", 0), "calculated"),
                    metric("Critical or high risk", rk["critical"] + rk["high"], "calculated"),
                    metric("Repairs verified / reopened", f"{rv['verified']} / {rv['reopened']}")]

@@ -83,12 +83,17 @@ What each status colour means:
 | Tone | Meaning in RoadSense |
 |---|---|
 | amber | Waiting on a human (awaiting review, class disputed, rule-engine mode) |
-| blue (primary) | Approved, merged sightings, informational |
-| violet | Sent to an authority, LLM agents |
-| green | Fixed, done, live, guardrail satisfied |
-| red | High severity, failure, destructive |
-| cyan | Provincial routing (NS Public Works) |
-| gray | Rejected, neutral, rule engine |
+| blue (primary) | Merged sightings, informational |
+| cyan | Awaiting inspection; provincial routing |
+| violet | Inspection assigned, LLM agents |
+| orange | Repair needed (scheduled, not done) |
+| green | Repaired, done, live, guardrail satisfied |
+| red | Reopened, overdue, high severity, failure, destructive |
+| gray | Closed (rejected, no repair needed, referred), neutral, rule engine |
+
+Workflow components (v3.2): `progressStrip()` (`.wf-strip` › `.wf-step.is-{done,now,stop,skip,todo,late}`, a
+vertical list under 760 px), `nextStep()` (`.wf-next` › `.wf-form`, built only from the report's `allowed_actions`),
+`overduePill()`, and overdue map markers (a red ring, `OVERDUE_RING`; clusters get `.is-overdue`).
 
 ### Scales
 

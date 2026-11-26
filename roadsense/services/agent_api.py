@@ -29,7 +29,7 @@ from ..agents.llm import key_status
 from ..common.config import settings
 from ..common.db import REPORT_STATUSES, audit, now, row, session
 from ..common.metrics import install as install_metrics
-from ..common.metrics import metrics
+from ..common.metrics import metrics, workflow_gauges
 from ..common.schemas import DamageEvent, RoadPass
 from ..core import (
     condition,
@@ -173,12 +173,12 @@ def system():
 @app.get("/metrics", dependencies=AUTH, response_class=PlainTextResponse)
 def prometheus():
     with session() as conn:
-        reports_by = conn.execute("SELECT status, COUNT(*) FROM reports GROUP BY status").fetchall()
+        workflow_by = workflow_gauges(conn)
         events_by = conn.execute("SELECT status, COUNT(*) FROM events GROUP BY status").fetchall()
         jobs_by = conn.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status").fetchall()
         failed = conn.execute("SELECT COUNT(*) FROM deliveries WHERE ok = 0").fetchone()[0]
     return metrics.render({
-        "roadsense_reports": [({"status": s}, n) for s, n in reports_by],
+        **workflow_by,
         "roadsense_events": [({"status": s}, n) for s, n in events_by],
         "roadsense_jobs": [({"status": s}, n) for s, n in jobs_by],
         "roadsense_delivery_failures": [({}, failed)],

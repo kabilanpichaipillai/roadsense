@@ -10,9 +10,9 @@ presentation quality and implementation readiness. Everything below is sized to 
 | 0:00-0:35 | Speaker 1 | One photo of a Halifax pothole, the number **3,203** | 3,203 pothole reports in 11 weeks this year. HRM itself says the count includes the same pothole reported many times and potholes on roads the city does not even own. Residents have to know whether to call 311 or 511. |
 | 0:35-1:05 | Speaker 1 | Architecture in one line: dashcam → edge model → 4 AI agent steps → driver approves → right authority | RoadSense turns any dashcam into a road inspector. It does not stop at a map: it finds the damage, confirms it, works out who owns the road, merges repeats, and files one report once a human approves. |
 | 1:05-3:35 | Speaker 2 | **Live demo** (below) | Narrate what the agents decided and *why*, not the clicks. |
-| 3:35-4:15 | Speaker 1 | The measured-results table | Numbers on held-out data: false alarms down 21% after verification, 100% correct authority routing and duplicate merging on 42 scenarios, nothing ever sent without approval. Be candid: report precision is about 0.74, which is why a human approves every report. |
+| 3:35-4:15 | Speaker 1 | The measured-results table | Numbers on held-out data: false alarms down 21% after verification, 100% correct authority routing and duplicate merging on 42 scenarios, nothing ever moves past review without a person. Be candid: report precision is about 0.74, which is why a human approves every report. |
 | 4:15-4:50 | Speaker 1 | Pilot slide from [business-case.md](business-case.md) | 8-week spring pilot with 5-10 HRM fleet vehicles; read-only Cityworks integration first; what we need from HRM. |
-| 4:50-5:00 | Speaker 1 | Logo + URL | One sentence: "Find it once, send it to the right desk, prove it was fixed." |
+| 4:50-5:00 | Speaker 1 | Logo + URL | One sentence: "Find it once, get it inspected and repaired, prove it was fixed." |
 
 ## Demo path (2:30)
 
@@ -24,9 +24,11 @@ Signed in as a reviewer on the Overview page, with the demo trips already proces
    agent timeline with its cited evidence ("RT-DETR-L confirms … at confidence 0.83"), and the routing decision to
    Nova Scotia Public Works. Open the disputed report: the two models disagree on the damage class and the system
    asks the human instead of guessing.
-3. **Approve** (30 s). Approve one report. Point out the SHA-256 lock: the payload the city receives is exactly
-   what the reviewer saw; an agent cannot change it afterwards.
-4. **Authorities** (20 s). The request is now in Halifax 311 (mock Open311) and the provincial referral is filed.
+3. **Approve and assign** (30 s). Approve one report: it moves to *Awaiting inspection*, nothing is sent anywhere.
+   Point out the SHA-256 lock on what was approved, then assign the demo inspector.
+4. **Inspect and repair** (40 s). As the inspector (My inspections), record *Repair needed* with a date and a photo,
+   then mark it repaired. Open the overdue report and the one a later trip reopened: every step is in the history,
+   hash-chained, with who and when.
 5. **Map / Road condition** (20 s, if time allows). Segment condition scores, worst first: what a roads manager
    plans with.
 
