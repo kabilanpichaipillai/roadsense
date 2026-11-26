@@ -188,6 +188,7 @@ const ROUTES = {
   reports: ["Reports", "Every defect, merged across drivers", renderReports],
   map: ["Map", "Reports on the road network", renderMap],
   conditions: ["Road condition", "Segment-level condition estimate from open defects (not a certified survey)", renderConditions],
+  assistant: ["Road Inspection Assistant", "Ask questions in plain language; every answer is built from RoadSense records and cites them", renderAssistant],
   activity: ["Agent activity", "Every plan, decision and tool call, from the append-only audit log", renderActivity],
   standards: ["Service standards", "Filed reports against each authority's published service standard, with a tamper-evident history", renderStandards],
   authorities: ["Authorities", "Requests delivered to Halifax 311 and Nova Scotia Public Works", renderAuthorities],
@@ -1700,6 +1701,167 @@ function riskCard(k) {
     <div class="muted small" style="margin-top:8px">${esc(k.disclaimer)} OpenStreetMap: ${esc(k.osm_status)}${k.osm_fetched_at ? `, fetched ${esc(new Date(k.osm_fetched_at).toLocaleDateString())}` : ""}.</div></div>`;
 }
 
+/* ---------- Road Inspection Assistant (read-only) ----------
+   Everything the assistant shows comes from the API response and is escaped: answer text is composed from records,
+   the optional AI summary is checked against them server-side, and table cells are record values. */
+const KIND = { observed: ["Observed", "green"], calculated: ["Calculated", "blue"], predicted: ["Forecast", "violet"], mixed: ["Observed + calculated", "cyan"] };
+const kindPill = (k) => { const [t, c] = KIND[k] || []; return t ? `<span class="pill ${c}">${esc(t)}</span>` : ""; };
+const AS_DATES = new Set(["first_seen", "closed_at", "reopened_at", "submitted_at", "next_due", "acknowledged_at", "completed_at"]);
+const assistantState = { cid: null, busy: false };
+
+function asCell(key, v, row) {
+  if (key === "report_id" && v) return `<a href="#/reports?id=${Number(v)}" class="mono">#${Number(v)}</a>`;
+  if (key === "report_list") return (v || []).slice(0, 8).map((i) => `<a href="#/reports?id=${Number(i)}" class="mono">#${Number(i)}</a>`).join(" ") + ((v || []).length > 8 ? ` <span class="muted small">+${v.length - 8}</span>` : "");
+  if (v === null || v === undefined || v === "") return `<span class="muted">${key === "overall" || key.endsWith("cycles") ? "unknown" : "–"}</span>`;
+  if (key === "service_status") return slaPill(v) + (row.provisional ? ` <span class="muted small">provisional: ${esc(String(row.provisional).replace(/_/g, " "))}</span>` : "");
+  if (key === "risk" && RISK_LEVELS[v]) return riskLevelPill(v);
+  if (key === "lifecycle" || key === "verification") return `<span class="pill">${esc(v)}</span>`;
+  if (AS_DATES.has(key)) return `<span class="nowrap">${esc(new Date(v).toLocaleDateString())}</span>`;
+  if (key === "days_left") return v < 0 ? `<span class="pill red">${-v} late</span>` : esc(v);
+  if (typeof v === "number" && !Number.isInteger(v)) return `<span class="mono">${v.toFixed(2)}</span>`;
+  if (key === "class_name" && row.class_code) return `${esc(v)} <span class="faint small mono">${esc(row.class_code)}</span>`;
+  return esc(v);
+}
+
+function asTable(t) {
+  const mark = (c) => (c.kind === "calculated" ? ` <span class="as-kind" title="Calculated by RoadSense">calc</span>` : c.kind === "predicted" ? ` <span class="as-kind pred" title="Forecast">forecast</span>` : "");
+  return `<div class="table-wrap"><table class="table compact"><thead><tr>${t.columns.map((c) => `<th>${esc(c.label)}${mark(c)}</th>`).join("")}</tr></thead>
+    <tbody>${t.rows.map((r) => `<tr>${t.columns.map((c) => `<td>${asCell(c.key, r[c.key], r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+
+function asEvidence(list) {
+  if (!list.length) return "";
+  const item = (e) => {
+    const facts = [
+      e.report_id ? `<a href="#/reports?id=${Number(e.report_id)}"><b>Report #${Number(e.report_id)}</b></a>` : `<b>Segment ${esc(e.segment_id)}</b>`,
+      e.first_seen ? `first detected ${esc(new Date(e.first_seen).toLocaleString())}` : "",
+      e.period ? `forecast period ${esc(e.period)}` : "",
+      e.observations != null ? `${Number(e.observations)} observation(s)` : "",
+      e.trips != null ? `${Number(e.trips)} trip(s)` : "", e.drivers != null ? `${Number(e.drivers)} driver(s)` : "",
+      e.checks != null ? `${Number(e.checks)} re-observation(s)` : "",
+      e.lat != null ? `<span class="mono">${Number(e.lat).toFixed(5)}, ${Number(e.lon).toFixed(5)}</span>` : "",
+      (e.risk_factors || e.factors || []).length ? `factors: ${(e.risk_factors || e.factors).map((f) => esc(f.label)).join(", ")}` : "",
+    ].filter(Boolean).join(" · ");
+    const photo = e.photo_event_id ? `<img class="thumb" loading="lazy" src="/api/media/${encodeURIComponent(e.photo_event_id)}.jpg?crop=1" alt="Evidence photo for report ${Number(e.report_id)}">` : "";
+    const hist = (e.history || []).map((h) => `<li class="small">${esc(new Date(h.observed_at).toLocaleDateString())}: ${esc(String(h.result).replace(/_/g, " "))} — ${esc(h.reason)}</li>`).join("");
+    const passes = (e.passes || []).map((p) => `<li class="small">${esc(new Date(p.at).toLocaleDateString())}: ${Number(p.size).toPrecision(3)} ${esc(p.unit)}</li>`).join("");
+    return `<li>${photo}<div style="flex:1;min-width:0">${facts}${hist || passes ? `<ul class="as-sub">${hist}${passes}</ul>` : ""}</div></li>`;
+  };
+  return `<details class="as-evidence"><summary>Evidence for ${list.length} record${list.length === 1 ? "" : "s"}</summary><ul class="feed">${list.map(item).join("")}</ul></details>`;
+}
+
+function asMap(host, points) {
+  const el = $(".as-map", host);
+  if (!el || !points.length) return;
+  const sel = (k, label, fmt = (x) => x) => {
+    const opts = [...new Set(points.map((p) => p[k]).filter(Boolean))].sort();
+    return opts.length > 1 ? `<label class="small muted">${label} <select class="input input-sm" data-k="${k}"><option value="">All</option>${opts.map((o) => `<option value="${esc(o)}">${esc(fmt(o))}</option>`).join("")}</select></label>` : "";
+  };
+  $(".as-map-filters", host).innerHTML = sel("class_code", "Damage", (x) => CLASS_LABELS[x] || x) + sel("band", "Severity") + sel("status", "Status", (x) => STATUS[x]?.[0] || x) + sel("risk", "Risk", (x) => RISK_LEVELS[x]?.[0] || x);
+  const m = baseMap(el, points.map((p) => [p.lat, p.lon]));
+  if (!m) return;
+  const layer = L.layerGroup().addTo(m);
+  const draw = () => {
+    const f = Object.fromEntries($$("select[data-k]", host).filter((s) => s.value).map((s) => [s.dataset.k, s.value]));
+    layer.clearLayers();
+    for (const p of points.filter((p) => Object.entries(f).every(([k, v]) => p[k] === v))) {
+      const c = RISK_LEVELS[p.risk]?.[3] || MAP_COLORS[p.status] || "#ffb547";
+      const link = p.report_id ? `<br><a href="#/reports?id=${Number(p.report_id)}">Open report #${Number(p.report_id)}</a>` : "";
+      L.circleMarker([p.lat, p.lon], { radius: 8, color: "#0b0d10", weight: 2, fillColor: c, fillOpacity: .95 })
+        .bindPopup(`<b>${esc(p.label)}</b>${p.band ? `<br>Severity band ${esc(p.band)}` : ""}${link}`).addTo(layer);
+    }
+  };
+  $$("select[data-k]", host).forEach((s) => s.onchange = draw);
+  draw();
+}
+
+function asAnswer(d) {
+  const metrics = d.metrics.length ? `<div class="as-metrics">${d.metrics.map((m) => `<div class="as-metric"><div class="k">${esc(m.label)}${m.kind !== "observed" ? ` <span class="as-kind${m.kind === "predicted" ? " pred" : ""}">${m.kind === "predicted" ? "forecast" : "calc"}</span>` : ""}</div><div class="v">${esc(m.value)}</div>${m.note ? `<div class="muted small">${esc(m.note)}</div>` : ""}</div>`).join("")}</div>` : "";
+  const warn = d.warnings.length ? `<div class="callout amber">${icon("alert")}<div>${d.warnings.map((w) => `<div>${esc(w)}</div>`).join("")}</div></div>` : "";
+  const lim = d.limitations.length ? `<div class="callout blue">${icon("shield")}<div><b>Limitations</b>${d.limitations.map((w) => `<div class="small">${esc(w)}</div>`).join("")}</div></div>` : "";
+  const narrative = d.narrative ? `<div class="callout as-ai">${icon("sparkle")}<div><b>${esc(d.narrative.label)}</b> <span class="small muted">Checked against the records above; not an official finding.</span><div>${esc(d.narrative.text)}</div></div></div>` : "";
+  const points = d.map?.points || [];
+  return `<div class="as-meta">${kindPill(d.answer.kind)}${d.answer.insufficient ? `<span class="pill amber">Insufficient information</span>` : ""}<span class="pill" title="How the question was read">${icon(d.understanding === "llm" ? "sparkle" : "cpu")}${d.understanding === "llm" ? "Read by AI, validated" : "Read by rules"}</span>
+      <span class="small muted">Interpreted as: ${d.interpretation.map(esc).join(" · ")}</span></div>
+    <p class="as-text">${esc(d.answer.text)}</p>${narrative}${metrics}${warn}
+    ${d.table ? asTable(d.table) : ""}
+    ${points.length ? `<div class="as-map-wrap"><div class="toolbar as-map-filters"></div><div class="as-map map"></div><div class="muted small">The map shows exactly the records in the table.</div></div>` : ""}
+    ${asEvidence(d.evidence || [])}${lim}
+    <div class="as-foot small muted">Retrieved ${esc(new Date(d.retrieved_at).toLocaleString())} · Sources: ${d.sources.map(esc).join(", ") || "–"}${d.method ? `<br>Method: ${esc(d.method)}` : ""}</div>`;
+}
+
+function asHistory(m) {
+  if (m.role === "user") return `<div class="as-msg as-user"><div class="as-bubble">${esc(m.content)}</div></div>`;
+  const refs = (m.result_ids || []).slice(0, 20).map((i) => `<a class="pill mono" href="#/reports?id=${Number(i)}">#${Number(i)}</a>`).join(" ");
+  return `<div class="as-msg as-bot"><div class="as-card"><p class="as-text">${esc(m.content)}</p>${refs ? `<div class="chip-row">${refs}</div>` : ""}
+    ${(m.warnings || []).length ? `<div class="callout amber">${icon("alert")}<div>${m.warnings.map((w) => `<div class="small">${esc(w)}</div>`).join("")}</div></div>` : ""}
+    <div class="as-foot small muted">Snapshot from ${esc(new Date(m.retrieved_at || m.created_at).toLocaleString())}. Records may have changed: ask again for current data.</div></div></div>`;
+}
+
+const asConvs = (convs) => convs.length ? convs.map((c) => `<li><a href="#/assistant?c=${esc(c.id)}" class="${c.id === assistantState.cid ? "on" : ""}"><span class="as-conv-title">${esc(c.title)}</span><span class="muted small">${Number(c.questions)} question${c.questions === 1 ? "" : "s"} · ${ago(c.updated_at)}</span></a></li>`).join("")
+  : `<li class="muted small" style="padding:12px 16px">No conversations yet.</li>`;
+
+async function renderAssistant(params) {
+  const view = stage();
+  assistantState.cid = /^[a-f0-9]{16}$/.test(params.get("c") || "") ? params.get("c") : null;
+  const [caps, convs, conv] = await Promise.all([api("/api/assistant/capabilities"), api("/api/assistant/conversations").catch(() => []),
+    assistantState.cid ? api(`/api/assistant/conversations/${assistantState.cid}`).catch(() => null) : null]);
+  if (assistantState.cid && !conv) assistantState.cid = null;
+  const suggestions = caps.suggestions.length ? caps.suggestions.map((s) => `<button type="button" class="as-suggest" data-q="${esc(s.text)}">${icon("search")}${esc(s.text)}</button>`).join("")
+    : `<div class="muted small">No RoadSense records yet: suggestions appear once trips have been processed.</div>`;
+  const off = caps.unavailable.length ? `<div class="muted small" style="margin-top:10px">No data yet for: ${caps.unavailable.map((k) => esc(k.replace(/_/g, " "))).join(", ")}. Questions about these will say so instead of guessing.</div>` : "";
+  view.innerHTML = `<div class="as-layout">
+    <aside class="card as-side" aria-label="Your conversations"><div class="card-head"><h2>Your conversations</h2><span class="spacer"></span><a class="btn btn-sm" href="#/assistant">${icon("plus")}New</a></div>
+      <ul class="as-convs">${asConvs(convs)}</ul></aside>
+    <section class="card as-chat" aria-label="Road Inspection Assistant">
+      <div class="card-head"><h2>${esc(conv?.title || "New conversation")}</h2><span class="pill">${icon("lock")}Read-only</span><span class="spacer"></span>
+        <button type="button" class="btn btn-sm btn-ghost" id="as-clear" ${assistantState.cid ? "" : "disabled"}>${icon("x")}Clear conversation</button></div>
+      <div class="as-log" id="as-log" aria-live="polite">${conv ? conv.messages.map(asHistory).join("") : `<div class="as-empty"><b>Ask about road conditions, repairs, deadlines and risk.</b><div class="muted small">Answers come only from RoadSense records and say what they are based on. The assistant cannot change anything.</div><div class="as-suggestions">${suggestions}</div>${off}</div>`}</div>
+      <form class="as-form" id="as-form"><label class="sr-only" for="as-q">Your question</label>
+        <textarea id="as-q" class="input" rows="2" maxlength="500" placeholder="e.g. Which potholes near schools are overdue?" required></textarea>
+        <button class="btn btn-primary" id="as-send" type="submit">${icon("send")}Send</button></form>
+    </section></div>`;
+  const log = $("#as-log", view), form = $("#as-form", view), q = $("#as-q", view), send = $("#as-send", view);
+  log.scrollTop = log.scrollHeight;
+  const ask = async (text) => {
+    if (assistantState.busy || !text.trim()) return;
+    assistantState.busy = true; send.disabled = true; q.value = "";
+    $(".as-empty", log)?.remove();
+    log.insertAdjacentHTML("beforeend", `<div class="as-msg as-user"><div class="as-bubble">${esc(text)}</div></div><div class="as-msg as-bot" id="as-pending"><div class="as-card"><span class="muted">${icon("refresh", "spin")} Reading the question and retrieving RoadSense records…</span></div></div>`);
+    log.scrollTop = log.scrollHeight;
+    const pending = $("#as-pending", log);
+    try {
+      const d = await api("/api/assistant/chat", { method: "POST", body: JSON.stringify({ question: text, conversation_id: assistantState.cid }) });
+      if (!view.isConnected) return;
+      pending.removeAttribute("id");
+      pending.innerHTML = `<div class="as-card">${asAnswer(d)}</div>`;
+      asMap(pending, d.map?.points || []);
+      if (!assistantState.cid) {
+        assistantState.cid = d.conversation_id;
+        history.replaceState(null, "", `#/assistant?c=${d.conversation_id}`);
+        $("#as-clear", view).disabled = false;
+        $(".as-chat .card-head h2", view).textContent = d.question;
+      }
+      api("/api/assistant/conversations").then((list) => { const ul = $(".as-convs", view); if (ul) ul.innerHTML = asConvs(list); }).catch(() => {});
+    } catch (e) {
+      pending.removeAttribute("id");
+      pending.innerHTML = `<div class="as-card"><div class="callout red">${icon("alert")}<div><b>No answer</b><div class="small">${esc(e.message)}</div><div class="small">Nothing was changed. Try again in a moment.</div></div></div></div>`;
+    } finally {
+      assistantState.busy = false; send.disabled = false; q.focus();
+      pending.scrollIntoView({ block: "start", behavior: STILL.matches ? "auto" : "smooth" });
+    }
+  };
+  form.onsubmit = (e) => { e.preventDefault(); ask(q.value); };
+  q.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); ask(q.value); } };
+  $$(".as-suggest", view).forEach((b) => b.onclick = () => ask(b.dataset.q));
+  $("#as-clear", view).onclick = async () => {
+    if (!assistantState.cid || !confirm("Delete this conversation? Only your chat history is removed; no RoadSense record changes.")) return;
+    try { await api(`/api/assistant/conversations/${assistantState.cid}`, { method: "DELETE" }); toast("Conversation deleted"); location.hash = "#/assistant"; if (location.hash === "#/assistant") router(); }
+    catch (e) { toast(e.message, false); }
+  };
+  if (!conv) q.focus();
+}
+
 /* ---------- Users (admin) ---------- */
 async function renderUsers() {
   const view = stage();
@@ -1871,7 +2033,7 @@ const palette = {
   el: $("#palette"), q: $("#palette-q"), list: $("#palette-list"), pending: [], items: [], sel: 0, opener: null,
   commands() {
     const nav = [["overview", "grid"], ["trips", "video"], ["review", "inbox"], ["reports", "file"], ["map", "map"],
-      ["conditions", "activity"], ["activity", "activity"], ["standards", "clock"], ["authorities", "building"], ["system", "shield"],
+      ["conditions", "activity"], ["assistant", "sparkle"], ["activity", "activity"], ["standards", "clock"], ["authorities", "building"], ["system", "shield"],
       ...(can("admin") ? [["users", "user"]] : [])]
       .map(([r, ic]) => ({ group: "Go to", label: ROUTES[r][0], hint: ROUTES[r][1], icon: ic, run: () => (location.hash = `#/${r}`) }));
     const acts = [

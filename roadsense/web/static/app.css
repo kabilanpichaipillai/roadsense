@@ -1222,3 +1222,48 @@ dialog.risk-modal::backdrop { background: var(--overlay); backdrop-filter: blur(
 .pill.strong { font-weight: 700; }
 .map-workspaces { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
 .map-workspaces { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
+
+/* ---------- Road Inspection Assistant ---------- */
+.as-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: var(--space-4); align-items: start; }
+.as-side { position: sticky; top: calc(var(--topbar-h) + var(--space-4)); max-height: calc(100vh - var(--topbar-h) - 120px); overflow: auto; }
+.as-convs { list-style: none; margin: 0; padding: var(--space-2); }
+.as-convs a { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: var(--radius-sm); color: inherit; text-decoration: none; }
+.as-convs a:hover { background: var(--surface-hover); }
+.as-convs a.on { background: var(--primary-soft); }
+.as-conv-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.as-chat { display: flex; flex-direction: column; min-height: 560px; }
+.as-log { flex: 1; display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-5); overflow: auto; max-height: calc(100vh - 300px); min-height: 360px; }
+.as-msg { display: flex; }
+.as-user { justify-content: flex-end; }
+.as-bubble { max-width: min(640px, 85%); background: var(--primary-soft); color: var(--text); border: 1px solid color-mix(in srgb, var(--primary) 25%, transparent); padding: 10px 14px; border-radius: var(--radius) var(--radius) var(--radius-xs) var(--radius); white-space: pre-wrap; overflow-wrap: anywhere; }
+.as-card { width: 100%; display: flex; flex-direction: column; gap: var(--space-3); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-4); min-width: 0; }
+.as-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.as-text { margin: 0; font-size: var(--text-md); line-height: 1.6; overflow-wrap: anywhere; }
+.as-ai { background: var(--violet-soft); color: var(--text); border-color: var(--violet-border); }
+.as-ai svg { color: var(--violet-text); }
+.as-metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-2); }
+.as-metric { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; background: var(--surface); }
+.as-metric .k { color: var(--muted); font-size: var(--text-sm); }
+.as-metric .v { font-size: var(--text-lg); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.as-kind { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--blue-text); border: 1px solid var(--blue-border); border-radius: var(--radius-xs); padding: 0 4px; font-weight: 600; }
+.as-kind.pred { color: var(--violet-text); border-color: var(--violet-border); }
+.as-map-wrap { display: flex; flex-direction: column; gap: 8px; }
+.as-map { height: 300px; min-height: 240px; border-radius: var(--radius-sm); }
+.as-evidence summary { cursor: pointer; font-weight: 500; }
+.as-evidence .feed li { align-items: flex-start; gap: 10px; }
+.as-evidence .thumb { width: 64px; height: 48px; object-fit: cover; border-radius: var(--radius-xs); flex: none; }
+.as-sub { margin: 4px 0 0; padding-left: 16px; }
+.as-foot { border-top: 1px solid var(--border); padding-top: 8px; }
+.as-empty { margin: auto 0; display: flex; flex-direction: column; gap: 6px; }
+.as-suggestions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.as-suggest { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: var(--radius-full); border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+.as-suggest:hover { border-color: var(--primary); }
+.as-suggest:focus-visible { outline: 2px solid var(--primary-ring); outline-offset: 2px; }
+.as-form { display: flex; gap: var(--space-2); padding: var(--space-4) var(--space-5); border-top: 1px solid var(--border); align-items: flex-end; }
+.as-form textarea { flex: 1; resize: vertical; min-height: 44px; max-height: 200px; padding: 10px 12px; height: auto; font: inherit; }
+@media (max-width: 900px) {
+  .as-layout { grid-template-columns: 1fr; }
+  .as-side { position: static; max-height: 220px; }
+  .as-log { max-height: none; padding: var(--space-3); }
+  .as-form { padding: var(--space-3); }
+}

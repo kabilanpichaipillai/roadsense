@@ -52,6 +52,10 @@ approval records who approved, and the audit log records every sign-in, user cha
   `X-Frame-Options: DENY`, `nosniff`, a strict referrer policy, and HSTS when `ROADSENSE_COOKIE_SECURE=1`.
 - Everything rendered from the server, including agent-written text, is HTML-escaped.
 - `/metrics` (Prometheus format) needs the service token on the agent API and an admin session on the web app.
+- The Road Inspection Assistant is read-only. Its model output is either a schema-validated query spec or a summary
+  checked against the retrieved ids and figures, and it never sees descriptions, authority notes, addresses or
+  coordinates. Conversations are private to their owner. The audit log records intent and counts, not the question.
+  See [docs/assistant.md](docs/assistant.md#security).
 
 ## Model providers and data residency
 

@@ -277,6 +277,45 @@ def standards_integrity(request: Request, report_id: int | None = None):
                  params={"report_id": report_id} if report_id else None)
 
 
+# ---------- Road Inspection Assistant (read-only; conversations are per person) ----------
+@app.get("/api/assistant/capabilities")
+def assistant_capabilities(request: Request):
+    return agent("GET", "/assistant/capabilities", need(request, "read"))
+
+
+@app.post("/api/assistant/chat")
+def assistant_chat(request: Request, body: dict = Body(...)):
+    user = need(request, "read")
+    question, cid = body.get("question"), body.get("conversation_id")
+    if not isinstance(question, str) or len(question) > 2000:
+        raise HTTPException(422, "question must be text (at most 500 characters are used)")
+    return agent("POST", "/assistant/chat", user, json={"question": question, "conversation_id": cid or None},
+                 timeout=120)
+
+
+@app.get("/api/assistant/conversations")
+def assistant_conversations(request: Request):
+    return agent("GET", "/assistant/conversations", need(request, "read"))
+
+
+def _cid(cid: str) -> str:
+    if not (len(cid) == 16 and all(c in "0123456789abcdef" for c in cid)):
+        raise HTTPException(404, "unknown conversation")
+    return cid
+
+
+@app.get("/api/assistant/conversations/{cid}")
+def assistant_conversation(cid: str, request: Request):
+    _cid(cid)
+    return agent("GET", f"/assistant/conversations/{cid}", need(request, "read"))
+
+
+@app.delete("/api/assistant/conversations/{cid}")
+def assistant_delete(cid: str, request: Request):
+    _cid(cid)
+    return agent("DELETE", f"/assistant/conversations/{cid}", need(request, "read"))
+
+
 @app.get("/api/labels")
 def labels():
     return agent("GET", "/labels")

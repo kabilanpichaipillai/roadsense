@@ -224,6 +224,7 @@ research synthesis in [docs/research-synthesis.md](docs/research-synthesis.md):
 | **Service standards** | Filed reports against each authority's published service standard (overdue, approaching, completed within target), configurable rules and holidays, and each report's hash-chained duty-of-care ledger: [docs/service-standards.md](docs/service-standards.md) |
 | **Authorities** | Halifax 311 (Open311) requests, NS Public Works referrals, Follow-up agent, driver notifications |
 | **Trust & system** | Production checklist, guardrails, privacy and retention, delivery channels, jobs and scheduler, MCP servers |
+| **Road Inspection Assistant** | Ask in plain language ("Which potholes near schools are overdue?"). Read-only; answers are built from RoadSense records with the report ids, evidence, a map, the retrieval time and what is unknown. Follow-ups narrow the previous answer. An LLM is optional: [docs/assistant.md](docs/assistant.md) |
 | **Users** (admin) | Add people, set roles (admin, reviewer, driver, viewer), disable accounts |
 
 Everyone signs in (password or single sign-on). On first start the admin password is written to
@@ -297,6 +298,17 @@ For every report RoadSense keeps three separate values (the detector's confidenc
 - The `score_exposure` job scores new or changed reports every `ROADSENSE_EXPOSURE_MINUTES`; a score is recomputed
   only when the report, its OSM data or the rules change.
 
+## Road Inspection Assistant
+
+Inspectors ask questions instead of clicking through dashboards: road damage, repeated damage, deterioration, repair
+verification, service standards, exposure-weighted risk, inspection priorities and the freeze-thaw forecast. Every
+question becomes a validated query specification (rules first; the LLM only when the rules cannot read it). Fixed
+read-only functions over the existing core modules answer it, and the answer is composed from those records. An
+optional LLM summary is shown only if every report number and figure in it was retrieved. The assistant cannot
+change anything, never invents a deadline, score or forecast, and says *"I could not find sufficient information in
+the available RoadSense records to answer this question reliably"* when the data is not there. Architecture,
+safeguards, API and settings: [docs/assistant.md](docs/assistant.md).
+
 ## Keyless demo
 
 ```bash
@@ -313,7 +325,7 @@ INCOMPLETE after an upgrade, re-record with `--record`. Browse the result with `
 ## Evidence
 
 ```bash
-python scripts/check.py                                   # ruff + 201 tests + pip-audit (no known vulnerabilities)
+python scripts/check.py                                   # ruff + 256 tests + pip-audit (no known vulnerabilities)
 python scripts/eval_verifier.py --split <RDD>/val --tune  # choose the verification rule on validation data
 python scripts/eval_verifier.py --split <RDD>/test        # report it once on test
 python scripts/eval_agents.py [--llm]                     # 42 decision scenarios end to end
@@ -334,6 +346,7 @@ roadsense/
   core/         verdict + severity + dedupe rules, verification, geocoding + jurisdiction, authority directory + payloads,
                 ECCC weather, freeze-thaw indicators, pothole risk forecast + evaluation,
                 exposure-weighted risk (OSM Overpass)
+  assistant/    Road Inspection Assistant: query spec, understanding, read-only retrieval, grounded answers, conversations
   mcp_servers/  detector, geo, reports, municipality (FastMCP, stdio, annotated tools)
   agents/       OpenRouter client (fallback chain, rate limit, cache/replay), MCP toolbox, typed contracts,
                 workflow steps + allow-lists (stages), trip workflow (orchestrator), deterministic safety net
