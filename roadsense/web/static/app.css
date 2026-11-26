@@ -1231,3 +1231,5 @@ dialog.risk-modal::backdrop { background: var(--overlay); backdrop-filter: blur(
 .bar-ref { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--muted); z-index: 1; }
 .bar-val { text-align: right; white-space: nowrap; }
 .bar-row:hover .bar { filter: brightness(1.15); }
+.map-workspaces { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
+.map-workspaces { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
