@@ -59,3 +59,15 @@ def test_render_functions_do_not_shadow_stage():
     js = client.get("/static/app.js").text
     # stage() hands each render its container; a local `const stage` inside a render breaks that page
     assert len(re.findall(r"const stage\s*=", js)) == 1
+
+
+def test_the_simulate_switch_names_the_whole_simulated_route():
+    import json
+    import re
+    from pathlib import Path
+
+    route = json.loads((Path(__file__).parents[1] / "roadsense/edge/halifax_route.json").read_text(encoding="utf-8"))
+    streets = [s.strip() for s in route["name"].split(":", 1)[1].split(",")]
+    label = re.search(r'id="simulate"[^>]*><span>([^<]+)</span>', client.get("/static/app.js").text).group(1)
+    assert all(s in label for s in streets), (streets, label)
+    assert f"{route['distance_m'] / 1000:.1f} km" in label

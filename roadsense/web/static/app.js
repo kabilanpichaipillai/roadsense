@@ -900,7 +900,7 @@ async function renderTrips(params) {
             <input type="file" id="video" accept=".mp4,.mov,.avi,.mkv,video/*" class="sr-only" required></label>
           <fieldset class="gps-set">
             <legend>GPS track</legend>
-            <label class="switch"><input type="checkbox" id="simulate" checked aria-controls="gps"><span>No GPS file: simulate a drive along Spring Garden Rd, Halifax</span></label>
+            <label class="switch"><input type="checkbox" id="simulate" checked aria-controls="gps"><span>No GPS file: simulate a 1.5 km drive in downtown Halifax (South Park St, Spring Garden Rd, Barrington St, South St)</span></label>
             <div class="file-pick" id="gps-pick">
               <label class="btn" for="gps">${icon("pin")}Choose GPS file</label>
               <input type="file" id="gps" accept=".gpx,.csv" class="sr-only">
