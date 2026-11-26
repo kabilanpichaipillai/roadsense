@@ -189,7 +189,8 @@ def me(request: Request):
     if u is None:
         return {"authenticated": False, "auth_enabled": settings.auth_enabled, "sso": sso}
     return {"authenticated": True, "auth_enabled": settings.auth_enabled, "sso": sso, "user": public_user(u),
-            "csrf": u["csrf"], "permissions": [p for p in PERMS if allowed(u, p)]}
+            "csrf": u["csrf"], "permissions": [p for p in PERMS if allowed(u, p)],
+            "workflow": {"municipality": settings.municipality, "forwarding": settings.forwarding}}
 
 
 @router.post("/api/auth/login")

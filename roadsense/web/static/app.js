@@ -74,11 +74,22 @@ const ICONS = {
 const icon = (n, cls = "") => `<svg class="${cls}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[n] || ""}</svg>`;
 
 /* ---------- vocabulary ---------- */
+/* The municipal workflow (core/workflow.py): review → inspection → repair → repaired, with reopen and closed */
 const STATUS = {
-  pending_approval: ["Awaiting review", "amber"], approved: ["Approved", "blue"], submitted: ["Sent", "violet"],
-  fixed: ["Closed by authority", "green"], rejected: ["Rejected", ""], delivery_failed: ["Delivery failed", "red"],
+  pending_approval: ["Awaiting review", "amber"], awaiting_inspection: ["Awaiting inspection", "cyan"],
+  inspection_assigned: ["Inspection assigned", "violet"], repair_needed: ["Repair needed", "orange"],
+  repaired: ["Repaired", "green"], reopened: ["Reopened", "red"], closed: ["Closed", ""],
 };
-// RoadSense's own check after the authority closes a report, shown next to (never instead of) the authority's status
+const STATUS_ORDER = Object.keys(STATUS);
+const OPEN_STATUSES = ["pending_approval", "awaiting_inspection", "inspection_assigned", "repair_needed", "reopened"];
+const CLOSED_REASON = { rejected: "Rejected", no_repair_needed: "No repair needed", referred: "Referred" };
+const statusLabel = (r) => r.status_label || (r.status === "closed" && CLOSED_REASON[r.closed_reason] ? `Closed (${CLOSED_REASON[r.closed_reason]})`
+  : r.status === "repaired" && r.verification_status === "verified" ? "Repaired (verified)" : (STATUS[r.status] || [r.status])[0]);
+const day = (iso) => iso ? new Date(`${String(iso).slice(0, 10)}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "–";
+const overduePill = (r) => r.overdue ? `<span class="pill red" title="The estimated repair date (${esc(day(r.repair_eta))}) has passed">${icon("clock")}Overdue</span>` : "";
+/* What this installation does with approved reports (from /api/me): forwarding is off unless the admin turns it on */
+const WF = { forwarding: false, municipality: "" };
+// RoadSense's own check after a repair is marked done, shown next to (never instead of) the crew's claim
 const VERIFICATION = {
   awaiting: ["Awaiting verification", "amber"], verified: ["Repair verified", "green"], reopened: ["Reopened", "red"],
 };
@@ -86,8 +97,8 @@ const RESULT = { verified: ["Verified", "green"], not_verified: ["Not verified",
 const verifPill = (s) => { const [t, c] = VERIFICATION[s] || []; return t ? `<span class="pill ${c}"><span class="dot"></span>${esc(t)}</span>` : ""; };
 const CLASS_LABELS = { D40: "Pothole", D20: "Alligator crack", D10: "Transverse crack", D00: "Longitudinal crack" };
 const CHANNELS = { open311: "Open311 API", cityworks: "Cityworks API", arcgis: "ArcGIS feature service", referral: "Referral package" };
-const ROLE_TONE = { admin: "violet", reviewer: "blue", driver: "cyan", viewer: "" };
-const statusPill = (s) => { const [t, c] = STATUS[s] || [s, ""]; return `<span class="pill ${c}"><span class="dot"></span>${esc(t)}</span>`; };
+const ROLE_TONE = { admin: "violet", reviewer: "blue", inspector: "green", driver: "cyan", viewer: "" };
+const statusPill = (s, r) => { const [t, c] = STATUS[s] || [s, ""]; return `<span class="pill ${c}"><span class="dot"></span>${esc(r ? statusLabel(r) : t)}</span>`; };
 const SEVERITY = { high: "red", medium: "amber", low: "" };
 const sevPill = (s) => `<span class="pill ${SEVERITY[s] || ""}">${esc(s ? s[0].toUpperCase() + s.slice(1) : "")}</span>`;
 const ACTORS = {
@@ -128,6 +139,8 @@ function describe(a) {
     case a.action === "verdict_rejected": return ["Rejected as a false alarm", rationale];
     case a.action === "report_created": return [`Opened report #${subj}`, d?.rationale || ""];
     case a.action === "report_merged": return [`Merged into report #${subj}`, d?.distance_m != null ? `Another sighting ${d.distance_m} m from an open report, so no new ticket. ${d?.rationale || ""}` : ""];
+    case a.action.startsWith("ledger_workflow_"): return workflowStep(a.action.slice(16), d || {});
+    case a.action === "status_migrated": return ["Status carried over from the earlier version", d?.from ? `${d.from.replace(/_/g, " ")} → ${d.to.replace(/_/g, " ")}` : ""];
     case a.action === "status_approved": return ["Approved the exact payload", "Locked by hash"];
     case a.action === "status_submitted": return [`Sent to the authority`, d?.service_request_id ? `Request ${d.service_request_id} via ${d.channel}` : ""];
     case a.action === "status_fixed": return ["Closed by the authority", "RoadSense will check the spot independently"];
@@ -182,17 +195,36 @@ function describe(a) {
   }
 }
 
+/* One workflow step from the ledger, in plain words: [what, why] */
+function workflowStep(action, d) {
+  const band = d.severity_band ? `severity band ${d.severity_band.from || "–"} → ${d.severity_band.to}` : "";
+  switch (action) {
+    case "approve": return ["Approved for inspection", "The reviewed payload is locked by hash"];
+    case "reject": return ["Rejected by a reviewer", d.reason || "Repeat sightings here are suppressed"];
+    case "assign": return [`Inspection assigned to ${d.inspector || "an inspector"}`, d.previous_inspector_id ? "Re-assigned" : ""];
+    case "repair_needed": return [`Repair needed by ${day(d.repair_eta)}`, [band, d.notes].filter(Boolean).join(" · ")];
+    case "no_repair_needed": return ["Inspected: no repair needed", d.notes || ""];
+    case "repaired": return ["Marked repaired", d.notes || "RoadSense now checks the spot on later trips"];
+    case "reopen": return [`Reopened${d.reopen_count > 1 ? ` (${d.reopen_count}×)` : ""}`, d.reason || ""];
+    case "reschedule": return [`Repair date moved to ${day(d.repair_eta?.to)}`, `Was ${day(d.repair_eta?.from)}${d.reason ? ` · ${d.reason}` : ""}`];
+    case "refer": return ["Referred to the road's own authority", d.service_request_id ? `Request ${d.service_request_id} via ${d.channel}` : ""];
+    default: return [action.replace(/_/g, " "), ""];
+  }
+}
+const photoSrc = (ref) => { const id = String(ref || "").split(":")[1]; return id ? `/api/media/photo/${encodeURIComponent(id)}.jpg` : ""; };
+
 /* ---------- shell ---------- */
 const ROUTES = {
-  overview: ["Overview", "What the agents found and what reached the road authorities", renderOverview],
+  overview: ["Overview", "What the agents found and where every repair stands", renderOverview],
   trips: ["Trips", "Upload a dashcam drive; the edge device and agents take it from there", renderTrips],
-  review: ["Review", "Nothing is sent until you approve the exact payload", renderReview],
+  review: ["Review", "Approve a report to send it to inspection; nothing leaves RoadSense", renderReview],
+  inspections: ["My inspections", "Reports assigned to you, highest priority first", renderInspections],
   reports: ["Reports", "Every defect, merged across drivers", renderReports],
   map: ["Map", "Reports on the road network", renderMap],
   conditions: ["Road condition", "Segment-level condition estimate from open defects (not a certified survey)", renderConditions],
   activity: ["Agent activity", "Every plan, decision and tool call, from the append-only audit log", renderActivity],
   standards: ["Service standards", "Filed reports against each authority's published service standard, with a tamper-evident history", renderStandards],
-  authorities: ["Authorities", "Requests delivered to Halifax 311 and Nova Scotia Public Works", renderAuthorities],
+  authorities: ["Authorities", "Referrals to the road authorities that own other roads (only when forwarding is on)", renderAuthorities],
   system: ["Trust & system", "Guardrails, privacy and the agent stack", renderSystem],
   users: ["Users", "Who can sign in, and what each role may do", renderUsers],
 };
@@ -273,8 +305,11 @@ const more = (href, label) => `<a href="${href}" class="link-more">${label}${ico
 
 async function refreshChrome() {
   try {
-    const [pending, sys] = await Promise.all([api("/api/reports?status=pending_approval"), api("/api/system")]);
+    const [pending, sys, mine] = await Promise.all([api("/api/reports?status=pending_approval"), api("/api/system"),
+      can("inspect") ? api("/api/reports?inspector_id=me").catch(() => []) : []]);
     $("#review-count").textContent = pending.length || "";
+    const todo = mine.filter((r) => ["inspection_assigned", "repair_needed", "reopened"].includes(r.status)).length;
+    if ($("#insp-count")) $("#insp-count").textContent = todo || "";
     // The tab title carries the queue size, so a reviewer sees new work from another tab
     const base = document.title.replace(/^\(\d+\) /, "");
     document.title = pending.length ? `(${pending.length}) ${base}` : base;
@@ -296,18 +331,20 @@ async function renderOverview() {
   const total = Object.values(by).reduce((a, b) => a + b, 0);
   const pending = by.pending_approval || 0;
   const confirmed = (s.events?.processed || 0) + (s.events?.verified || 0);
-  const sent = (by.submitted || 0) + (by.fixed || 0);
+  const repaired = by.repaired || 0;
   const province = s.authorities?.["Nova Scotia Public Works"] || 0;
+  const inspecting = (by.awaiting_inspection || 0) + (by.inspection_assigned || 0);
 
   // 1. The queue: the one thing a reviewer does here, and where every report stands
-  const order = ["pending_approval", "approved", "submitted", "delivery_failed", "fixed", "rejected"].filter((k) => by[k]);
+  const order = STATUS_ORDER.filter((k) => by[k]);
   // The bar is a picture of the legend below it; the legend carries the links and the numbers for every reader
   const stack = order.map((k) => `<span class="ov-seg" data-s="${k}" style="flex:${by[k]}"></span>`).join("");
   const legend = order.map((k) => `<li><a href="#/reports?status=${k}" data-s="${k}"><span class="sw"></span>${esc(STATUS[k][0])}<b>${num(by[k])}</b></a></li>`).join("");
+  const overdue = s.overdue ? `<a class="ov-overdue" href="#/reports?status=overdue">${icon("clock")}<b>${num(s.overdue)}</b> overdue repair${s.overdue === 1 ? "" : "s"}<span>past the estimated repair date</span>${icon("arrow")}</a>` : "";
   const queue = pending
     ? `<div class="ov-num" aria-hidden="true">${num(pending)}</div>
-       <h2 class="ov-lead"><span class="sr-only">${num(pending)} </span>${pending === 1 ? "report waits" : "reports wait"} for your approval</h2>
-       <p class="ov-sub">Nothing reaches Halifax 311 or the province until you approve its exact payload.</p>
+       <h2 class="ov-lead"><span class="sr-only">${num(pending)} </span>${pending === 1 ? "report waits" : "reports wait"} for your review</h2>
+       <p class="ov-sub">${WF.forwarding ? "Approved reports go to inspection; those on roads another authority owns are referred to it." : "Approved reports go to inspection. Nothing leaves RoadSense."}</p>
        <div class="ov-actions"><a class="btn btn-primary btn-lg" href="#/review">${icon("inbox")}Start reviewing</a><a class="btn btn-lg" href="#/map">${icon("map")}See them on the map</a></div>`
     : `<div class="ov-num is-clear" aria-hidden="true">0</div>
        <h2 class="ov-lead">The review queue is clear</h2>
@@ -320,12 +357,14 @@ async function renderOverview() {
   // 3. Signals: counts that deserve a look, quiet when they are zero
   const sig = (ic, tone, n, label, hint, href) => `<li><a class="ov-sig ${n ? "" : "is-zero"}" href="${href}"><span class="ic ${tone}">${icon(ic)}</span><span class="txt"><b>${label}</b><span>${hint}</span></span><span class="n">${num(n)}</span></a></li>`;
   const signals = [
+    sig("clock", "red", s.overdue, "Overdue repairs", "Past the estimated repair date", "#/reports?status=overdue"),
+    sig("alert", "red", by.reopened || 0, "Reopened", "The repair did not hold", "#/reports?status=reopened"),
+    sig("eye", "cyan", inspecting, "Waiting for inspection", `${num(by.inspection_assigned)} assigned to an inspector`, "#/reports?status=awaiting_inspection"),
     sig("eye", "amber", s.class_disputed, "Damage type disputed", "The two vision models disagree", "#/review"),
-    sig("route", "cyan", province, "Routed to the province", "100-series highways, not city 311", "#/authorities"),
     sig("merge", "blue", s.multi_driver_reports, "Seen by 2+ drivers", "Independent confirmations", "#/reports"),
-    sig("wrench", "green", by.fixed || 0, "Closed by the authority", `${num(s.repair_verification?.verified)} independently verified`, "#/reports?status=fixed"),
-    s.repair_verification?.reopened ? sig("alert", "red", s.repair_verification.reopened, "Reopened after closure", "Damage seen again by a later trip", "#/reports?status=fixed") : "",
-    s.delivery_failed ? sig("alert", "red", s.delivery_failed, "Deliveries failing", "Retrying with back-off", "#/authorities") : "",
+    sig("wrench", "green", repaired, "Repaired", `${num(s.repair_verification?.verified)} independently verified`, "#/reports?status=repaired"),
+    WF.forwarding ? sig("route", "cyan", province, "Routed to the province", "100-series highways, not city 311", "#/authorities") : "",
+    WF.forwarding && s.delivery_failed ? sig("alert", "red", s.delivery_failed, "Referrals failing", "Retrying with back-off", "#/authorities") : "",
   ].join("");
 
   view.innerHTML = `
@@ -335,10 +374,11 @@ async function renderOverview() {
         <div class="ov-k">${num(total)} reports by status</div>
         <div class="ov-stack" aria-hidden="true">${stack || '<span class="ov-seg empty"></span>'}</div>
         <ul class="ov-legend">${legend}</ul>
+        ${overdue}
       </div>
     </section>
-    ${fold("road", "From dashcam to the right desk",
-      `${num(s.detections)} spotted → ${num(confirmed)} confirmed → ${num(total)} unique → ${num(sent)} sent`,
+    ${fold("road", "From dashcam to repair",
+      `${num(s.detections)} spotted → ${num(confirmed)} confirmed → ${num(total)} unique → ${num(repaired)} repaired`,
       `${num(s.trips)} trips · ${num(s.llm_calls)} LLM calls · ${num(s.llm_tokens)} tokens · ${pct(s.fallback_rate)} decided by the rule engine`,
       `<ol class="ov-lane">
         ${stop(s.detections, "Spotted on the dashcam", "Edge model, faces and plates blurred")}
@@ -346,8 +386,8 @@ async function renderOverview() {
         ${stop(confirmed, "Confirmed by a second model", "RT-DETR-L checks every crop; AI judges borderline ones")}
         ${drop(s.duplicates_merged, "merged as duplicates")}
         ${stop(total, "Unique reports", pending ? `${num(pending)} waiting for you` : "None waiting", pending ? "is-hot" : "")}
-        ${drop(total - sent, "not sent yet")}
-        ${stop(sent, "Sent to an authority", province ? `${num(province)} to the province` : "Via Open311")}
+        ${drop(total - repaired, "not repaired yet")}
+        ${stop(repaired, "Repaired", `${num(s.repair_verification?.verified)} independently verified`)}
       </ol>`, "ov-road")}
     ${impactCard(s.impact)}
     ${repairCard(s.repair_verification)}
@@ -459,7 +499,9 @@ function tripsTable(trips) {
 }
 
 /* ---------- Map ---------- */
-const MAP_COLORS = { pending_approval: "#ffb547", approved: "#7ab8ff", submitted: "#b89cff", fixed: "#5bd18b", rejected: "#8a929e" };
+const MAP_COLORS = { pending_approval: "#ffb547", awaiting_inspection: "#7ab8ff", inspection_assigned: "#b89cff",
+  repair_needed: "#ff9a5a", repaired: "#5bd18b", reopened: "#ff6b5b", closed: "#8a929e" };
+const OVERDUE_RING = "#ff3b30";
 function drawMap(id, reports, { zoom = 15, interactive = true } = {}) {
   const el = document.getElementById(id);
   if (!el || !window.L) return;
@@ -472,9 +514,10 @@ function drawMap(id, reports, { zoom = 15, interactive = true } = {}) {
   L.tileLayer(esri("Base"), { maxZoom: 19, maxNativeZoom: 16, attribution: "Tiles © Esri, HERE, Garmin, © OpenStreetMap contributors" }).addTo(m);
   L.tileLayer(esri("Reference"), { maxZoom: 19, maxNativeZoom: 16 }).addTo(m);
   const outline = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() || "#fff";
-  const single = (r) => L.circleMarker([r.lat, r.lon], { radius: 6 + Math.min(r.confirmations, 4) * 2, color: outline,
-    weight: 2, fillColor: MAP_COLORS[r.status] || "#667085", fillOpacity: .95, className: r.status === "pending_approval" ? "ns-pending" : "" })
-    .bindPopup(`<b>#${r.id} ${esc(r.class_name)}</b><br>${esc(r.address || "")}<br>${esc(authority(r.jurisdiction))} · ${esc(STATUS[r.status]?.[0] || r.status)}<br>${r.confirmations} driver(s)<br><a href="#/reports?id=${r.id}">Open report</a>`);
+  // an overdue repair gets a thick red ring around its status colour (colour is never the only signal: the popup says so)
+  const single = (r) => L.circleMarker([r.lat, r.lon], { radius: 6 + Math.min(r.confirmations, 4) * 2, color: r.overdue ? OVERDUE_RING : outline,
+    weight: r.overdue ? 4 : 2, fillColor: MAP_COLORS[r.status] || "#667085", fillOpacity: .95, className: r.status === "pending_approval" ? "ns-pending" : "" })
+    .bindPopup(`<b>#${r.id} ${esc(r.class_name)}</b><br>${esc(r.address || "")}<br>${esc(statusLabel(r))}${r.overdue ? ` · <b>overdue</b> (due ${esc(day(r.repair_eta))})` : r.repair_eta && ["repair_needed", "reopened"].includes(r.status) ? ` · due ${esc(day(r.repair_eta))}` : ""}<br>${r.confirmations} driver(s)<br><a href="#/reports?id=${r.id}">Open report</a>`);
   const layer = L.layerGroup().addTo(m);
   // Reports closer than CLUSTER_PX on screen merge into one circle sized by count; it splits again as you zoom in.
   const draw = () => {
@@ -506,15 +549,16 @@ function clusterReports(m, reports) {
 }
 
 /* The cluster takes the most urgent status inside it, so a single report awaiting review is never hidden. */
-const URGENCY = ["delivery_failed", "pending_approval", "approved", "submitted", "fixed", "rejected"];
+const URGENCY = ["reopened", "pending_approval", "repair_needed", "inspection_assigned", "awaiting_inspection", "repaired", "closed"];
 function clusterMarker(m, group) {
   const lat = group.reduce((a, r) => a + r.lat, 0) / group.length, lon = group.reduce((a, r) => a + r.lon, 0) / group.length;
   const status = URGENCY.find((s) => group.some((r) => r.status === s)) || group[0].status;
   const size = Math.round(30 + Math.min(Math.sqrt(group.length) * 7, 34));
   const pending = group.filter((r) => r.status === "pending_approval").length;
-  const label = `${group.length} reports${pending ? `, ${pending} awaiting review` : ""}`;
+  const late = group.filter((r) => r.overdue).length;
+  const label = `${group.length} reports${pending ? `, ${pending} awaiting review` : ""}${late ? `, ${late} overdue` : ""}`;
   const icon = L.divIcon({ className: "ns-cluster-wrap", iconSize: [size, size],
-    html: `<span class="ns-cluster ${status === "pending_approval" ? "is-pending" : ""}" style="--c:${MAP_COLORS[status] || "#667085"};width:${size}px;height:${size}px" aria-label="${esc(label)}">${group.length}</span>` });
+    html: `<span class="ns-cluster ${status === "pending_approval" ? "is-pending" : ""} ${late ? "is-overdue" : ""}" style="--c:${MAP_COLORS[status] || "#667085"};width:${size}px;height:${size}px" aria-label="${esc(label)}">${group.length}</span>` });
   const marker = L.marker([lat, lon], { icon, title: label, keyboard: true, riseOnHover: true });
   marker.on("click", () => {
     const bounds = L.latLngBounds(group.map((r) => [r.lat, r.lon]));
@@ -528,18 +572,17 @@ async function renderMap(params) {
   const view = stage();
   const all = await api("/api/reports");
   const filter = params.get("status") || "all";
-  const list = filter === "all" ? all : all.filter((r) => r.status === filter);
-  const count = (s) => s === "all" ? all.length : all.filter((r) => r.status === s).length;
+  const list = filterBy(all, filter);
   view.innerHTML = `
     <div class="toolbar">
-      <div class="tabs" role="group" aria-label="Show reports by status">${["all", "pending_approval", "submitted", "fixed"].map((s) => `<button type="button" aria-pressed="${s === filter}" class="${s === filter ? "on" : ""}" data-s="${s}">${s === "all" ? "All" : STATUS[s][0]}<span class="n">${count(s)}</span></button>`).join("")}</div>
+      ${statusTabs(all, filter, ["all", "pending_approval", "awaiting_inspection", "repair_needed", "reopened", "repaired", "overdue"])}
       <span class="spacer"></span>
       <div class="map-workspaces">
         <button type="button" class="btn" id="open-exposure" aria-haspopup="dialog" aria-controls="risk-modal">${icon("alert")}Exposure Risk</button>
         <button type="button" class="btn" id="open-risk" aria-haspopup="dialog" aria-controls="risk-modal">${icon("risk")}Pothole Risk</button>
       </div>
     </div>
-    <div class="card"><div class="card-head"><div class="legend">${Object.entries(MAP_COLORS).map(([k, c]) => `<span><i style="background:${c}"></i>${STATUS[k][0]}</span>`).join("")}</div><span class="spacer"></span><span class="desc">Marker size = number of drivers</span></div><div id="big-map" class="map"></div></div>`;
+    <div class="card"><div class="card-head"><div class="legend">${Object.entries(MAP_COLORS).map(([k, c]) => `<span><i style="background:${c}"></i>${STATUS[k][0]}</span>`).join("")}<span><i class="ring" style="--c:${OVERDUE_RING}"></i>Overdue (red ring)</span></div><span class="spacer"></span><span class="desc">Marker size = number of drivers</span></div><div id="big-map" class="map"></div></div>`;
   $$(".tabs button").forEach((b) => b.onclick = () => location.hash = `#/map?status=${b.dataset.s}`);
   $("#open-exposure", view).onclick = () => openRiskModal("exposure");
   $("#open-risk", view).onclick = () => openRiskModal("forecast");
@@ -547,14 +590,16 @@ async function renderMap(params) {
 }
 
 /* ---------- Reports ---------- */
+/* Status filters: one per workflow status, plus Overdue (computed by the server from the repair date) */
+const filterBy = (all, f) => f === "all" ? all : f === "overdue" ? all.filter((r) => r.overdue) : all.filter((r) => r.status === f);
+const statusTabs = (all, filter, keys) => `<div class="tabs" role="group" aria-label="Show reports by status">${keys.map((s) => `<button type="button" aria-pressed="${s === filter}" class="${s === filter ? "on" : ""} ${s === "overdue" ? "tab-overdue" : ""}" data-s="${s}">${s === "all" ? "All" : s === "overdue" ? "Overdue" : STATUS[s][0]}<span class="n">${filterBy(all, s).length}</span></button>`).join("")}</div>`;
 async function renderReports(params) {
   const view = stage();
   const id = params.get("id");
   if (id) return renderReportPage(id);
   const filter = params.get("status") || "all";
   const [all, trips] = await Promise.all([api("/api/reports"), api("/api/trips").catch(() => [])]);
-  const list = filter === "all" ? all : all.filter((r) => r.status === filter);
-  const count = (s) => all.filter((r) => r.status === s).length;
+  const list = filterBy(all, filter);
   // Group by the trip that first saw each defect, newest trip first
   const started = Object.fromEntries(trips.map((t) => [t.trip_id, t.started]));
   const groups = Object.entries(list.reduce((g, r) => ((g[r.trip_id || "unknown"] ||= []).push(r), g), {}))
@@ -564,7 +609,7 @@ async function renderReports(params) {
   const row = (r) => `<tr class="click" tabindex="0" data-id="${r.id}" data-q="${esc(`${r.class_name} ${r.address || ""} #${r.id} ${authority(r.jurisdiction)} ${r.trip_id || ""}`.toLowerCase())}"><td class="c-thumb"><img class="thumb" loading="lazy" src="/api/media/${encodeURIComponent(r.best_event_id)}.jpg?crop=1" alt=""></td>
         <td class="c-name"><span class="nowrap"><span class="strong">${esc(r.class_name)}</span> <span class="faint small mono">#${r.id}</span></span><div class="chip-row" style="margin-top:4px">${flags(r)}</div></td>
         <td class="c-loc">${esc(r.address || "")}</td><td class="c-auth nowrap">${esc(authority(r.jurisdiction))}</td><td class="c-sev">${sevPill(r.severity)}</td>
-        <td class="c-drv" data-label="Drivers">${r.confirmations}</td><td class="c-pri mono" data-label="Priority">${r.priority}</td><td class="c-status">${statusPill(r.status)}</td><td class="c-go">${icon("arrow", "row-arrow")}</td></tr>`;
+        <td class="c-drv" data-label="Drivers">${r.confirmations}</td><td class="c-pri mono" data-label="Priority">${r.priority}</td><td class="c-status">${statusPill(r.status, r)}${overduePill(r)}</td><td class="c-go">${icon("arrow", "row-arrow")}</td></tr>`;
   const group = ([trip, rs]) => `<tbody class="trip-group" data-trip="${esc(trip)}">
       <tr class="group-row"><th colspan="9" scope="rowgroup"><button type="button" class="group-toggle" aria-expanded="true">
         ${icon("arrow", "chev")}<span class="avatar pill">${icon("video")}</span><span class="g-title"><b class="mono">${esc(trip)}</b><span class="g-meta">${started[trip] ? ago(started[trip]) + " · " : ""}<span class="g-n">${rs.length}</span> report${rs.length === 1 ? "" : "s"}</span></span>
@@ -572,7 +617,7 @@ async function renderReports(params) {
       ${rs.map(row).join("")}</tbody>`;
   view.innerHTML = `
     <div class="toolbar">
-      <div class="tabs" role="group" aria-label="Show reports by status">${["all", "pending_approval", "submitted", "fixed", "rejected"].map((s) => `<button type="button" aria-pressed="${s === filter}" class="${s === filter ? "on" : ""}" data-s="${s}">${s === "all" ? "All" : STATUS[s][0]}<span class="n">${s === "all" ? all.length : count(s)}</span></button>`).join("")}</div>
+      ${statusTabs(all, filter, ["all", ...STATUS_ORDER, "overdue"])}
       <span class="spacer"></span>
       <label class="input-icon">${icon("search")}<span class="sr-only">Filter reports</span><input class="input" id="report-q" type="search" placeholder="Filter by damage, street or #id" value="${esc(params.get("q") || "")}"><span class="kbd input-kbd" aria-hidden="true">/</span></label>
     </div>
@@ -623,6 +668,7 @@ const targetText = (t) => {
   return `${Number(t.completion_days)} ${unit}${t.usable ? "" : ` <span class="pill amber" title="An administrator has not verified this rule's source: deadlines are provisional">unverified</span>`}`;
 };
 const flags = (r) => [
+  r.reopen_count ? `<span class="pill red">${icon("refresh")}Reopened ${r.reopen_count}×</span>` : "",
   r.class_disputed ? `<span class="pill amber">Class disputed</span>` : "",
   r.confirmations > 1 ? `<span class="pill blue">${icon("merge")}${r.confirmations} drivers</span>` : "",
 ].join("");
@@ -642,34 +688,42 @@ async function renderReportPage(id) {
 function reportDetail(d) {
   const r = d.report, e = d.events.find((x) => x.id === r.best_event_id) || d.events[0] || {};
   const p = d.payload;
-  const trail = d.trail.filter((a) => /^(verdict_|report_|status_|verify|recheck|payload|repair_(awaiting|verified|not_verified))/.test(a.action));
+  const trail = d.trail.filter((a) => /^(verdict_|report_|status_|ledger_workflow_|verify|recheck|payload|repair_(awaiting|verified|not_verified))/.test(a.action));
+  const allowed = new Set(r.allowed_actions || []);
   const pending = r.status === "pending_approval";
-  const review = can("review");
-  const failed = r.status === "delivery_failed" || (r.status === "approved" && r.last_error);
+  const review = allowed.has("approve");
+  const failed = WF.forwarding && r.status === "awaiting_inspection" && r.last_error;
+  const elsewhere = WF.forwarding && r.jurisdiction && r.jurisdiction !== WF.municipality;
+  const due = ["repair_needed", "reopened"].includes(r.status);
   const trend = d.deterioration || {};
   const city = (d.external || []).filter((x) => x.source === "city_sr");
   const feeds = (d.external || []).filter((x) => x.source !== "city_sr");
   return `
-    <div class="card-head"><h2>${esc(r.class_name)} <span class="muted">#${r.id}</span></h2>${statusPill(r.status)}${verifPill(r.verification_status)}<span class="spacer"></span><span class="muted small">${esc(r.address || "")}</span></div>
+    <div class="card-head"><h2>${esc(r.class_name)} <span class="muted">#${r.id}</span></h2>${statusPill(r.status, r)}${overduePill(r)}${r.status === "repaired" && r.verification_status !== "verified" ? verifPill(r.verification_status) : ""}<span class="spacer"></span><span class="muted small">${esc(r.address || "")}</span></div>
+    ${progressStrip(r, d.trail)}
     <div class="card-body detail">
       <div class="dgrid">
         <div><button type="button" class="photo-btn" data-zoom="${esc(`${r.class_name} #${r.id} · ${r.address || ""}`)}" aria-label="Enlarge the photo of ${esc(r.class_name)} #${r.id}">
             <img class="detail-photo" src="/api/media/${encodeURIComponent(r.best_event_id)}.jpg" alt="Privacy-blurred frame of the damage"><span class="photo-hint">${icon("zoom")}Enlarge</span></button>
           <div class="small muted" style="margin-top:6px">${icon("shield", "")} Everything except the damage was blurred on the device before upload.</div></div>
         <div class="dside">
+          ${nextStep(d)}
           ${r.class_disputed ? `<div class="callout amber">${icon("alert")}<div><b>The two models disagree on the damage type.</b> YOLOv8m's label is kept; please check the photo.</div></div>` : ""}
           
           ${r.confirmations > 1 ? `<div class="callout blue">${icon("merge")}<div><b>Seen by ${r.confirmations} independent drivers.</b> Repeat sightings were merged instead of filed again.</div></div>` : ""}
           ${city.length ? `<div class="callout amber">${icon("building")}<div><b>The city already has a request here</b> (${city.map((x) => esc(x.id.replace(/^city:/, "#"))).join(", ")}${city[0].status ? ", " + esc(city[0].status) : ""}). Approving files a duplicate unless it adds new evidence.</div></div>` : ""}
           ${feeds.length ? `<div class="callout blue">${icon("layers")}<div><b>Corroborated by ${feeds.length} third-party sighting(s)</b>: ${[...new Set(feeds.map((x) => esc(x.source)))].join(", ")}.</div></div>` : ""}
-          ${failed ? `<div class="callout red">${icon("alert")}<div><b>Delivery ${r.status === "delivery_failed" ? "failed" : "will be retried"}</b> after ${r.delivery_attempts} attempt(s): ${esc(r.last_error || "")}${r.next_attempt_at ? `<div class="small">Next automatic attempt at ${esc(new Date(r.next_attempt_at).toLocaleTimeString())}</div>` : ""}${review ? `<div style="margin-top:8px"><button class="btn btn-sm" id="resend">${icon("refresh")}Resend now</button></div>` : ""}</div></div>` : ""}
+          ${failed ? `<div class="callout red">${icon("alert")}<div><b>Referral ${r.next_attempt_at ? "will be retried" : "failed"}</b> after ${r.delivery_attempts} attempt(s): ${esc(r.last_error || "")}${r.next_attempt_at ? `<div class="small">Next automatic attempt at ${esc(new Date(r.next_attempt_at).toLocaleTimeString())}</div>` : ""}${can("review") ? `<div style="margin-top:8px"><button class="btn btn-sm" id="resend">${icon("refresh")}Resend now</button></div>` : ""}</div></div>` : ""}
           <div class="facts">
             <div class="fact"><div class="k">Severity</div><div class="v">${sevPill(r.severity)}</div></div>
             <div class="fact"><div class="k">Est. width</div><div class="v">${r.class_code === "D40" && r.width_m ? Math.round(r.width_m * 100) + " cm" : r.class_code === "D40" ? "–" : "n/a for cracks"}</div></div>
             <div class="fact"><div class="k">Edge confidence</div><div class="v">${e.confidence != null ? e.confidence.toFixed(2) : "–"}</div></div>
             <div class="fact"><div class="k">Verifier confidence</div><div class="v">${e.verified_confidence != null ? e.verified_confidence.toFixed(2) : e.recheck_confidence != null ? e.recheck_confidence.toFixed(2) + " (close-up)" : "–"}</div></div>
             <div class="fact"><div class="k">Position</div><div class="v">${e.position_uncertainty_m ? "± " + e.position_uncertainty_m + " m" : "car position"}</div></div>
-            <div class="fact"><div class="k">Goes to</div><div class="v">${esc(authority(r.jurisdiction))}</div></div>
+            <div class="fact"><div class="k">Road owner</div><div class="v">${esc(authority(r.jurisdiction))}</div></div>
+            <div class="fact"><div class="k">Inspector</div><div class="v small">${r.inspector ? esc(r.inspector.name || r.inspector.email) : `<span class="muted">not assigned</span>`}</div></div>
+            <div class="fact"><div class="k">Repair date</div><div class="v">${r.repair_eta ? `<span class="${r.overdue ? "text-red" : ""}">${esc(day(r.repair_eta))}</span>` : due ? `<span class="muted">needs a new date</span>` : "–"}</div></div>
+            ${r.reopen_count ? `<div class="fact"><div class="k">Reopened</div><div class="v">${r.reopen_count}×</div></div>` : ""}
             <div class="fact"><div class="k">Severity band</div><div class="v">${r.severity_band ? `<span class="pill mono">${esc(r.severity_band)}</span>` : "–"}</div></div>
             <div class="fact"><div class="k">Repair target</div><div class="v">${targetText(r.service_target)}</div></div>
             <div class="fact"><div class="k">Trend</div><div class="v">${trend.passes > 1 ? `${esc(trend.trend)} <span class="muted small">(${trend.passes} passes)</span>` : `<span class="muted">${trend.passes || 0} pass</span>`}</div></div>
@@ -679,13 +733,13 @@ function reportDetail(d) {
         </div>
       </div>
       <div class="dgrid dgrid-even">
-        <div><h3 class="h3">Why the agents decided this</h3>
-          ${trail.length ? `<ul class="timeline">${trail.map((a) => { const [what, why] = describe(a); return `<li>${avatar(a.actor)}<div class="who">${esc(what)} <span class="muted small">· ${esc(actor(a.actor)[0])} · ${ago(a.ts)}</span></div>${why ? `<div class="say">${esc(why).slice(0, 400)}</div>` : ""}</li>`; }).join("")}</ul>` : `<div class="muted">No decisions recorded.</div>`}
+        <div><h3 class="h3">What happened</h3>
+          ${trail.length ? `<ul class="timeline">${trail.map(trailItem).join("")}</ul>` : `<div class="muted">No decisions recorded.</div>`}
           ${r.rationale ? `<div class="callout blue" style="margin-top:4px">${icon("route")}<div><b>Routing:</b> ${esc(r.rationale)}</div></div>` : ""}
         </div>
-        <div><h3 class="h3">${pending ? "What you are approving" : "What the authority received"}</h3>
+        <div><h3 class="h3">${pending ? "What you are approving" : r.closed_reason === "referred" ? "What the authority received" : "The approved record"}</h3>
           <div class="payload"><dl>
-            <dt>To</dt><dd><b>${esc(p.authority)}</b> <span class="pill">${esc(CHANNELS[p.channel] || p.channel)}</span></dd>
+            <dt>Road owner</dt><dd><b>${esc(p.authority)}</b>${WF.forwarding ? ` <span class="pill">${esc(CHANNELS[p.channel] || p.channel)}</span>` : ""}</dd>
             <dt>Service</dt><dd class="mono">${esc(p.service_code)}</dd>
             <dt>Location</dt><dd>${esc(p.address_string)}<div class="muted mono">${p.lat}, ${p.long}</div></dd>
             <dt>Description</dt><dd>${esc(p.description)}</dd>
@@ -698,9 +752,112 @@ function reportDetail(d) {
     ${verificationCard(d.verification)}
     ${riskCard(d.risk)}
     ${(d.deliveries || []).length ? `<div class="card-body" style="padding-top:0"><h3 class="h3">Deliveries</h3><ul class="feed">${d.deliveries.map((x) => `<li>${avatar(x.ok ? "agent:filing" : "fallback")}<div style="flex:1;min-width:0"><span class="what">${esc(x.kind === "update" ? "Update" : "Submission")} via ${esc(CHANNELS[x.channel] || x.channel || "?")}</span> ${x.ok ? `<span class="pill green">ok</span>` : `<span class="pill red">failed</span>`}<div class="why">${esc(x.detail || "")}</div></div><span class="when">${ago(x.ts)}</span></li>`).join("")}</ul></div>` : ""}
-    ${pending && review ? `<div class="actionbar"><span class="review-pos" id="review-pos" hidden></span><span class="muted small"><span class="kbd">J</span>/<span class="kbd">K</span> next/previous. Sending always needs a click.</span><span class="spacer"></span>
-      <div class="actionbar-btns"><button class="btn btn-danger" id="reject">${icon("x")}Reject</button><button class="btn btn-primary btn-lg" id="approve">${icon("send")}Approve &amp; send to ${esc(authority(r.jurisdiction))}</button></div></div>` : ""}
+    ${pending && review ? `<div class="actionbar"><span class="review-pos" id="review-pos" hidden></span><span class="muted small"><span class="kbd">J</span>/<span class="kbd">K</span> next/previous. Deciding always needs a click.</span><span class="spacer"></span>
+      <div class="actionbar-btns"><button class="btn btn-danger" id="reject">${icon("x")}Reject</button><button class="btn btn-primary btn-lg" id="approve">${icon(elsewhere ? "send" : "check")}${elsewhere ? `Approve &amp; refer to ${esc(authority(r.jurisdiction))}` : "Approve for inspection"}</button></div></div>` : ""}
     ${pending && !review ? `<div class="actionbar"><span class="muted small">${icon("lock")} Only reviewers can approve or reject reports. You are signed in as ${esc(session.user?.role || "")}.</span></div>` : ""}`;
+}
+
+/* One line of the report history; workflow steps show who and when, and their photo */
+function trailItem(a) {
+  const [what, why] = describe(a);
+  const ph = a.action.startsWith("ledger_workflow_") ? parse(a.detail)?.photo : null;
+  const kind = String(ph || "").startsWith("repair:") ? "Repair photo" : "Inspection photo";
+  return `<li>${avatar(a.actor)}<div class="who">${esc(what)} <span class="muted small">· ${esc(actor(a.actor)[0])} · ${esc(new Date(a.ts).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }))}</span></div>${why ? `<div class="say">${esc(why).slice(0, 400)}</div>` : ""}
+    ${ph ? `<button type="button" class="photo-btn tl-photo" data-zoom="${esc(kind)}" aria-label="Enlarge the ${esc(kind.toLowerCase())}"><img src="${photoSrc(ph)}" alt="${esc(kind)}" loading="lazy"><span class="photo-hint">${icon("zoom")}Enlarge</span></button>` : ""}</li>`;
+}
+
+/* Review → Inspection → Repair → Repaired: where the report is, with who and when for each step */
+function progressStrip(r, trail) {
+  const last = (...acts) => [...trail].reverse().find((x) => acts.some((a) => x.action === `ledger_workflow_${a}`));
+  const by = (x) => x ? `${esc(actor(x.actor)[0])} · ${esc(day(x.ts))}` : "";
+  const reason = r.closed_reason;
+  const approved = last("approve"), rejected = last("reject"), assigned = last("assign");
+  const inspected = [...trail].find((x) => ["ledger_workflow_repair_needed", "ledger_workflow_no_repair_needed"].includes(x.action));
+  const fixed = last("repaired");
+  const at = { pending_approval: 0, awaiting_inspection: 1, inspection_assigned: 1, repair_needed: 2, reopened: 2, repaired: 3 }[r.status]
+    ?? (reason === "no_repair_needed" ? 1 : 0);
+  const state = (i) => r.status === "closed" ? (i < at ? "done" : i === at ? "stop" : "skip") : r.status === "repaired" ? "done" : i < at ? "done" : i === at ? "now" : "todo";
+  const insp = r.inspector ? esc(r.inspector.name || r.inspector.email) : "";
+  const steps = [
+    ["Review", rejected ? `Rejected · ${by(rejected)}` : approved ? `Approved · ${by(approved)}` : "Waiting for a reviewer"],
+    ["Inspection", reason === "referred" ? "Referred to the road's own authority" : inspected ? `${reason === "no_repair_needed" ? "No repair needed" : "Inspected"} · ${by(inspected)}`
+      : assigned ? `Assigned to ${insp || "an inspector"} · ${esc(day(assigned.ts))}` : at >= 1 ? "No inspector assigned yet" : ""],
+    ["Repair", r.status === "reopened" ? `Reopened ${r.reopen_count}× · needs a new date` : r.repair_eta ? `${r.overdue ? "Overdue · was due" : at > 2 ? "Planned for" : "Due"} ${esc(day(r.repair_eta))}` : ""],
+    ["Repaired", fixed && r.status === "repaired" ? `${by(fixed)} · ${r.verification_status === "verified" ? "independently verified" : "awaiting independent check"}` : ""],
+  ];
+  return `<ol class="wf-strip" aria-label="Workflow progress">${steps.map(([t, sub], i) => `<li class="wf-step is-${state(i)}${i === 2 && r.overdue ? " is-late" : ""}" ${state(i) === "now" ? 'aria-current="step"' : ""}>
+    <span class="wf-dot" aria-hidden="true">${state(i) === "done" ? icon("check") : state(i) === "stop" ? icon("x") : i + 1}</span><span class="wf-t">${t}</span><span class="wf-sub">${sub}</span></li>`).join("")}</ol>`;
+}
+
+/* The next step for this person, from the report's allowed_actions (the server decides; the page never guesses) */
+function nextStep(d) {
+  const r = d.report, can_ = new Set(r.allowed_actions || []);
+  const today = new Date().toLocaleDateString("en-CA");
+  const photo = (label) => `<label class="wf-field">${label} <span class="muted small">(optional · JPEG or PNG, up to 5 MB)</span><input class="input" type="file" name="photo" accept="image/jpeg,image/png"></label>`;
+  const notes = (label = "Notes") => `<label class="wf-field">${label}<textarea class="input" name="notes" rows="2" maxlength="1000"></textarea></label>`;
+  const eta = (value = "") => `<label class="wf-field">Estimated repair date<input class="input" type="date" name="repair_eta" min="${today}" value="${esc(value)}" required></label>`;
+  const parts = [];
+  if (can_.has("assign")) parts.push(`<form class="wf-form" data-act="assign"><label class="wf-field" for="wf-insp">${r.inspector_id ? "Re-assign the inspection" : "Assign a road inspector"}
+      <select id="wf-insp" name="inspector_id" class="input" required><option value="">Loading inspectors…</option></select></label>
+      <button class="btn btn-primary" type="submit">${icon("user")}${r.inspector_id ? "Re-assign" : "Assign inspector"}</button></form>`);
+  if (can_.has("no_repair_needed")) parts.push(`<form class="wf-form" data-act="inspection">
+      <fieldset class="wf-outcome"><legend class="wf-field">Inspection outcome</legend>
+        <label class="wf-radio"><input type="radio" name="outcome" value="repair_needed" checked>Repair needed</label>
+        <label class="wf-radio"><input type="radio" name="outcome" value="no_repair_needed">No repair needed</label></fieldset>
+      <div class="wf-grid" data-when="repair_needed">${eta()}
+        <label class="wf-field">Severity band<select class="input" name="severity_band">${["S1", "S2", "S3", "S4"].map((b) => `<option ${b === r.severity_band ? "selected" : ""}>${b}</option>`).join("")}</select></label></div>
+      ${notes("What you found")}${photo("Site photo")}
+      <button class="btn btn-primary" type="submit">${icon("check")}Record inspection</button></form>`);
+  else if (can_.has("repair_needed")) parts.push(`<form class="wf-form" data-act="plan"><p class="small muted">The repair did not hold. Set a new repair date to put it back on the schedule.</p>${eta()}${notes()}
+      <button class="btn btn-primary" type="submit">${icon("clock")}Schedule the repair</button></form>`);
+  if (can_.has("repaired")) parts.push(`<form class="wf-form" data-act="repaired">${notes("Repair notes")}${photo("Photo of the repair")}
+      <button class="btn btn-primary" type="submit">${icon("wrench")}Mark repaired</button></form>`);
+  if (can_.has("reschedule")) parts.push(`<details class="wf-more"><summary>Change the repair date</summary><form class="wf-form" data-act="eta">${eta(r.repair_eta)}
+      <label class="wf-field">Why<input class="input" name="reason" maxlength="500"></label><button class="btn" type="submit">${icon("clock")}Reschedule</button></form></details>`);
+  if (can_.has("reopen")) parts.push(`<details class="wf-more"><summary>Reopen: the repair did not hold</summary><form class="wf-form" data-act="reopen">
+      <label class="wf-field">Reason<input class="input" name="reason" maxlength="500" required placeholder="What you saw"></label><button class="btn btn-danger" type="submit">${icon("refresh")}Reopen</button></form></details>`);
+  if (!parts.length) return "";
+  return `<section class="wf-next" aria-labelledby="wf-next-h"><h3 class="h3" id="wf-next-h">Next step</h3>${parts.join("")}</section>`;
+}
+
+function bindNextStep(d, after) {
+  const r = d.report, id = r.id;
+  const sel = $("#wf-insp");
+  if (sel) api("/api/users?role=inspector").then((us) => {
+    sel.innerHTML = us.length ? `<option value="">Choose an inspector</option>${us.map((u) => `<option value="${u.id}" ${u.id === r.inspector_id ? "selected" : ""}>${esc(u.name || u.email)}</option>`).join("")}`
+      : `<option value="">No inspector accounts yet (Users page)</option>`;
+  }).catch((e) => { sel.innerHTML = `<option value="">${esc(e.message)}</option>`; });
+  $$(".wf-form").forEach((f) => {
+    const when = $("[data-when]", f);
+    const sync = () => {
+      if (!when) return;
+      const on = $("input[name=outcome]:checked", f)?.value === when.dataset.when;
+      when.hidden = !on;
+      $$("input, select", when).forEach((x) => { x.disabled = !on; });
+    };
+    $$("input[name=outcome]", f).forEach((x) => (x.onchange = sync));
+    sync();
+    f.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const btn = $("button[type=submit]", f);
+      btn.disabled = true;
+      const fd = new FormData(f), act = f.dataset.act;
+      if (fd.get("photo") && !fd.get("photo").size) fd.delete("photo");
+      const json = (body) => ({ method: "POST", body: JSON.stringify(body) });
+      try {
+        let out;
+        if (act === "assign") out = await api(`/api/reports/${id}/assign`, json({ inspector_id: Number(fd.get("inspector_id")) }));
+        else if (act === "inspection" || act === "plan") {
+          if (act === "plan") fd.set("outcome", "repair_needed");
+          out = await api(`/api/reports/${id}/inspection`, { method: "POST", body: fd });
+        } else if (act === "repaired") out = await api(`/api/reports/${id}/repaired`, { method: "POST", body: fd });
+        else if (act === "eta") out = await api(`/api/reports/${id}/eta`, { method: "PATCH", body: JSON.stringify({ repair_eta: fd.get("repair_eta"), reason: fd.get("reason") }) });
+        else if (act === "reopen") out = await api(`/api/reports/${id}/reopen`, json({ reason: fd.get("reason") }));
+        toast(`#${id}: ${statusLabel(out)}${out.repair_eta && ["repair_needed", "reopened"].includes(out.status) ? `, repair by ${day(out.repair_eta)}` : ""}`);
+        after(true); refreshChrome();
+      } catch (e) { toast(e.message, false); btn.disabled = false; }
+    };
+  });
 }
 
 /* Before and after: the original detection next to the latest re-observation, and why the repair was (not) verified */
@@ -716,16 +873,16 @@ function verificationCard(v) {
   const o = v.original || {}, l = v.latest;
   const side = (title, src, alt, rows) => `<figure class="ba-side"><figcaption class="h3">${title}</figcaption>
       ${src ? `<button type="button" class="photo-btn" data-zoom="${esc(alt)}" aria-label="Enlarge: ${esc(alt)}"><img class="detail-photo" src="${src}" alt="${esc(alt)}"><span class="photo-hint">${icon("zoom")}Enlarge</span></button>`
-            : `<div class="ba-empty muted">${icon("clock")}No trip has passed this spot since the closure</div>`}
+            : `<div class="ba-empty muted">${icon("clock")}No trip has passed this spot since the repair</div>`}
       <dl class="ba-facts">${rows.map(([k, val]) => `<dt>${k}</dt><dd>${val}</dd>`).join("")}</dl></figure>`;
   const tone = { verified: "green", reopened: "red", awaiting: "amber" }[v.state] || "blue";
-  const head = { verified: "The repair was independently verified", reopened: "The damage is still there: RoadSense reopened this report",
+  const head = { verified: "The repair was independently verified", reopened: "The repair did not hold: the report was reopened",
     awaiting: l ? "Not verified yet: the evidence so far is inconclusive" : "Waiting for a vehicle to pass the spot again" }[v.state];
   const hist = v.history || [];
   const pill = (res) => `<span class="pill ${(RESULT[res] || [])[1] || ""}">${esc((RESULT[res] || [res])[0])}</span>`;
   return `<div class="card-body" style="padding-top:0"><h3 class="h3">Independent repair verification</h3>
     <div class="callout ${tone}">${icon(v.state === "reopened" ? "alert" : v.state === "verified" ? "wrench" : "clock")}<div><b>${esc(head)}.</b> ${esc(v.reason || "")}
-      <div class="small muted">The authority's status stays “${esc((STATUS[v.authority_status] || [v.authority_status])[0])}” (closed ${when(v.closed_at)}); this check is RoadSense's own.</div></div></div>
+      <div class="small muted">Marked repaired ${when(v.closed_at)}. This check is RoadSense's own, kept apart from the crew's report.</div></div></div>
     <div class="ba">
       ${side("Original detection", img(o.image), "Original detection", [["Detected", when(o.captured_at)], ["Location", where(o)], ["Class", esc(CLASS_LABELS[o.class_code] || o.class_code || "–")], ["Confidence", o.confidence != null ? o.confidence.toFixed(2) : "–"]])}
       ${side("Latest follow-up", l ? img(l.image) : "", "Latest follow-up observation", l ? [["Observed", when(l.observed_at)], ["Location", where(l)], ["Distance", l.distance_m != null ? `${l.distance_m} m from the original` : "–"], ["Result", pill(l.result)]] : [["Result", "–"]])}
@@ -736,10 +893,10 @@ function verificationCard(v) {
 
 /* Repair Verification Rate: verified / conclusively re-observed. Not-yet-seen repairs are not failures. */
 function repairCard(m) {
-  if (!m || !m.closed_by_authority) return "";
+  if (!m || !m.marked_repaired) return "";
   const tile = (ic, tone, value, label, hint) => `<div class="card kpi"><div class="label">${label}<span class="ic ${tone}">${icon(ic)}</span></div><div class="value">${value}</div><div class="hint">${hint}</div></div>`;
   const rate = m.verification_rate == null ? "no conclusive checks yet" : `${m.verification_rate}% verified`;
-  return fold("repair", "Are closed repairs really fixed?",
+  return fold("repair", "Do the repairs hold?",
     `${rate} · ${num(m.awaiting_verification)} awaiting · ${num(m.not_verified)} reopened`,
     "Rate = verified ÷ conclusively re-observed (verified + reopened) · repairs nobody has driven past yet are not counted as failures",
     `<div class="grid kpis">
@@ -755,12 +912,13 @@ function bindDetail(d, after) {
   const id = d.report.id;
   const approve = $("#approve"), reject = $("#reject");
   if (approve) approve.onclick = async () => {
-    approve.disabled = true; reject && (reject.disabled = true); approve.innerHTML = `${icon("refresh", "spin")}Sending…`;
+    approve.disabled = true; reject && (reject.disabled = true); approve.innerHTML = `${icon("refresh", "spin")}Approving…`;
     try {
-      const job = await api(`/api/reports/${id}/approve`, { method: "POST", body: JSON.stringify({ payload_hash: d.payload_hash }) });
-      const res = job.result || {};
-      if (res.service_request_id) toast(`Sent to ${authority(res.authority)}: request ${res.service_request_id}`);
-      else toast(`Not sent: ${res.error || job.error || "unknown error"}`, false);
+      const r = await api(`/api/reports/${id}/approve`, { method: "POST", body: JSON.stringify({ payload_hash: d.payload_hash }) });
+      const res = r.referral?.result || {};
+      if (!r.referral) toast(`Approved: #${id} now awaits inspection`);
+      else if (res.service_request_id) toast(`Referred to ${authority(res.authority)}: request ${res.service_request_id}`);
+      else toast(`Approved; the referral did not go through: ${res.error || r.referral.error || "it is queued"}`, false);
     } catch (e) { toast(e.message, false); }
     after(); refreshChrome();
   };
@@ -775,7 +933,7 @@ function bindDetail(d, after) {
     }
     clearTimeout(reject.t);
     reject.disabled = true; approve && (approve.disabled = true);
-    try { await api(`/api/reports/${id}/reject`, { method: "POST" }); toast("Rejected: it will not be sent, and repeat sightings are suppressed."); } catch (e) { toast(e.message, false); }
+    try { await api(`/api/reports/${id}/reject`, { method: "POST" }); toast("Rejected and closed: repeat sightings here are suppressed."); } catch (e) { toast(e.message, false); }
     after(); refreshChrome();
   };
   const sel = $("#reclass"), save = $("#reclass-save");
@@ -788,6 +946,7 @@ function bindDetail(d, after) {
       after(true);
     };
   }
+  bindNextStep(d, after);
   const resend = $("#resend");
   if (resend) resend.onclick = async () => {
     resend.disabled = true; resend.innerHTML = `${icon("refresh", "spin")}Sending…`;
@@ -805,7 +964,7 @@ async function renderReview(params) {
   const view = stage();
   const pending = await api("/api/reports?status=pending_approval");
   if (!pending.length) {
-    view.innerHTML = `<div class="card">${emptyState("check", "You're all caught up", "New reports appear here after each trip. Nothing is sent to a road authority until you approve it.", `<a class="btn" style="margin-top:12px" href="#/reports">See all reports</a>`)}</div>`;
+    view.innerHTML = `<div class="card">${emptyState("check", "You're all caught up", "New reports appear here after each trip. An approved report goes to inspection; nothing leaves RoadSense.", `<a class="btn" style="margin-top:12px" href="#/reports">See all reports</a>`)}</div>`;
     return;
   }
   const current = Number(params.get("id")) || pending[0].id;
@@ -864,6 +1023,29 @@ document.addEventListener("keydown", (ev) => {
   else toast(k === "j" ? "This is the last report in the list" : "This is the first report in the list");
 });
 
+/* ---------- My inspections: what a road inspector works through ---------- */
+async function renderInspections() {
+  const view = stage();
+  const mine = await api("/api/reports?inspector_id=me");
+  const todo = mine.filter((r) => ["inspection_assigned", "repair_needed", "reopened"].includes(r.status));
+  const done = mine.filter((r) => !todo.includes(r));
+  reportNav.ids = [...todo, ...done].map((r) => r.id); // J / K on a report page follow this list
+  const row = (r) => `<tr class="click" tabindex="0" data-id="${r.id}"><td class="c-thumb"><img class="thumb" loading="lazy" src="/api/media/${encodeURIComponent(r.best_event_id)}.jpg?crop=1" alt=""></td>
+      <td class="c-name"><span class="nowrap"><span class="strong">${esc(r.class_name)}</span> <span class="faint small mono">#${r.id}</span></span><div class="chip-row" style="margin-top:4px">${sevPill(r.severity)}${flags(r)}</div></td>
+      <td class="c-loc">${esc(r.address || "")}</td><td class="c-status">${statusPill(r.status, r)}${overduePill(r)}</td>
+      <td class="c-due nowrap" data-label="Repair date">${r.repair_eta ? esc(day(r.repair_eta)) : r.status === "reopened" ? `<span class="muted">needs a new date</span>` : "–"}</td>
+      <td class="c-pri mono" data-label="Priority">${r.priority}</td><td class="c-go">${icon("arrow", "row-arrow")}</td></tr>`;
+  const table = (rs) => `<div class="table-wrap"><table class="table"><thead><tr><th></th><th>Damage</th><th>Location</th><th>Status</th><th>Repair date</th><th>Priority</th><th></th></tr></thead><tbody>${rs.map(row).join("")}</tbody></table></div>`;
+  const late = todo.filter((r) => r.overdue).length;
+  view.innerHTML = `<div class="card"><div class="card-head"><h2>To do</h2><span class="pill ${todo.length ? "amber" : ""}">${todo.length}</span><span class="spacer"></span>${late ? `<span class="pill red">${icon("clock")}${late} overdue</span>` : ""}</div>
+      ${todo.length ? table(todo) : emptyState("check", "Nothing assigned to you", "A reviewer assigns an inspection after approving a report; it appears here.")}</div>
+    ${done.length ? `<div class="card section"><div class="card-head"><h2>Done</h2><span class="pill">${done.length}</span><span class="desc">Repaired or closed: RoadSense keeps checking repairs on later trips</span></div>${table(done)}</div>` : ""}`;
+  $$("tr.click", view).forEach((tr) => {
+    tr.onclick = () => location.hash = `#/reports?id=${tr.dataset.id}`;
+    tr.onkeydown = (e) => { if (e.key === "Enter") tr.onclick(); };
+  });
+}
+
 /* ---------- evidence lightbox: the reviewer's only look at the damage, so let them see it properly ---------- */
 function openLightbox(src, caption) {
   let dlg = $("#lightbox");
@@ -900,7 +1082,7 @@ document.addEventListener("click", (e) => {
 const SHORTCUTS = [
   ["Anywhere", [[["Ctrl", "K"], "Search, jump to a page or a report"], [["?"], "Show these shortcuts"], [["Ctrl", "I"], "Open or close the Road Inspection Assistant"], [["/"], "Filter the list on this page"], [["Esc"], "Close a dialog or the menu"]]],
   ["Review and report pages", [[["J"], "Next report"], [["K"], "Previous report"], [["Enter"], "Open the focused report"]]],
-  ["Never on a key", [[[], "Approving and rejecting always need a click: they decide what reaches a road authority"]]],
+  ["Never on a key", [[[], "Approving, rejecting and every inspection or repair step always need a click"]]],
 ];
 function openShortcuts() {
   let dlg = $("#shortcuts");
@@ -961,7 +1143,7 @@ async function renderTrips(params) {
         <li>${avatar("agent:vision")}<div><b>Vision</b><div class="muted small">RT-DETR-L second opinion and close-up re-check. The AI judges only borderline detections: real damage or false alarm.</div></div></li>
         <li>${avatar("agent:location")}<div><b>Location</b><div class="muted small">Road class and route number decide Halifax 311 or Nova Scotia Public Works; the AI picks only when the rules are unsure.</div></div></li>
         <li>${avatar("agent:triage")}<div><b>Triage</b><div class="muted small">Merges repeat sightings within 15 m; independent drivers raise priority. Plain rules, no AI.</div></div></li>
-        <li>${avatar("agent:filing")}<div><b>Drafting</b><div class="muted small">The AI writes the description the city reads; nothing is sent until you approve it.</div></div></li></ul></div></div>
+        <li>${avatar("agent:filing")}<div><b>Drafting</b><div class="muted small">The AI writes the report description; a person approves it before anything happens.</div></div></li></ul></div></div>
     </div>
     <div id="job" class="section"></div>
     <div class="card section"><div class="card-head"><h2>All trips</h2><span class="pill">${trips.length}</span></div>${tripsTable(trips)}</div>`;
@@ -1140,7 +1322,8 @@ async function renderAuthorities() {
   const view = stage();
   const a = await api("/api/authorities");
   view.innerHTML = `
-    <div class="grid kpis">
+    ${WF.forwarding ? "" : `<div class="callout blue">${icon("info")}<div><b>Forwarding is off.</b> RoadSense handles every report itself, from review to repair, and sends nothing to another authority. An administrator can turn on referrals for roads other authorities own (ROADSENSE_FORWARD_MODE=on).</div></div>`}
+    <div class="grid kpis section">
       <div class="card kpi"><div class="label">Halifax 311 requests<span class="ic violet">${icon("building")}</span></div><div class="value">${a.open311.length}</div><div class="hint">${a.open311.filter((r) => r.status === "closed").length} closed (repaired)</div></div>
       <div class="card kpi"><div class="label">NS Public Works referrals<span class="ic cyan">${icon("route")}</span></div><div class="value">${a.referrals.length}</div><div class="hint">100-series highways and provincial roads</div></div>
       <div class="card kpi"><div class="label">Driver notifications<span class="ic green">${icon("wrench")}</span></div><div class="value">${a.notifications.length}</div><div class="hint">"Your pothole was fixed"</div></div>
@@ -1182,10 +1365,11 @@ async function renderSystem() {
     ${warn.length ? `<div class="callout amber section-tight">${icon("alert")}<div><b>${warn.length} setting(s) are not production-ready</b><ul class="warn-list">${warn.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div></div>` : `<div class="callout green section-tight">${icon("check")}<div><b>Production checklist passed</b>: secrets set, sign-in on, data residency enforced, public evidence links.</div></div>`}
     <div class="grid two">
       <div class="card"><div class="card-head"><h2>Guardrails enforced in code</h2></div><div class="card-body"><ul class="list-check">
-        ${guard("Nothing is sent without reviewer approval", "The city tool refuses any report that isn't approved, whatever an agent asks. Only the reviewer and admin roles can approve.")}
-        ${guard("The reviewer approves the exact payload", "Approval stores the payload and its SHA-256; delivery sends that snapshot and refuses if it was altered.")}
+        ${guard(dep.workflow?.forwarding ? "Only other authorities' roads are referred" : "Nothing leaves RoadSense", dep.workflow?.forwarding ? "Forwarding is on: an approved report on a road another authority owns is referred to it; everything else stays in the municipal workflow." : "Forwarding is off: approved reports go to inspection and repair here. The referral tool refuses to send anything.")}
+        ${guard("Only people move a report", "Agents draft and recommend. Approve, assign, inspect, repair and reopen are workflow steps a person takes (RoadSense's own repair check may reopen); every step is hash-chained in the ledger.")}
+        ${guard("The reviewer approves the exact payload", "Approval stores the payload and its SHA-256; a referral sends that snapshot and refuses if it was altered.")}
         ${guard("Rules decide severity and authority", "The agent's severity and jurisdiction are checked against the rules and map evidence; disagreements are logged.")}
-        ${guard("Failed deliveries are retried", "Backoff from 1 minute to 6 hours, then the report is flagged for a manual resend.")}
+        ${dep.workflow?.forwarding ? guard("Failed referrals are retried", "Backoff from 1 minute to 6 hours, then the report stays for inspection here with a manual resend.") : ""}
         ${guard("AI only where judgement helps", "A code workflow runs every step; the AI judges borderline detections, unsure jurisdictions and drafts descriptions, in batches.")}
         ${guard("The AI never calls tools", "Each step uses its own allow-listed tools, enforced in code. The AI's typed answer is checked: unknown ids or choices outside the candidates are dropped and the rule decides.")}
         ${guard("No confirmation without evidence", "Damage is confirmed only with a second model's support; disagreements go to a human.")}
@@ -2050,7 +2234,7 @@ async function aiDelete(id) {
 async function renderUsers() {
   const view = stage();
   const users = await api("/api/users");
-  const roles = ["admin", "reviewer", "driver", "viewer"];
+  const roles = ["admin", "reviewer", "inspector", "driver", "viewer"];
   view.innerHTML = `
     <div class="card"><div class="card-head"><h2>Add a user</h2><span class="desc">Password sign-in. With single sign-on, people are added on their first sign-in.</span></div>
       <form class="card-body form-row" id="new-user" autocomplete="off">
@@ -2060,7 +2244,7 @@ async function renderUsers() {
         <label>Initial password<input class="input" name="password" type="password" minlength="12" autocomplete="new-password" placeholder="12+ characters, Aa1"></label>
         <button class="btn btn-primary" type="submit">${icon("plus")}Add user</button>
       </form></div>
-    <div class="card section"><div class="card-head"><h2>Users</h2><span class="pill">${users.length}</span><span class="spacer"></span><span class="muted small">admin · reviewer (approve) · driver (upload) · viewer (read)</span></div>
+    <div class="card section"><div class="card-head"><h2>Users</h2><span class="pill">${users.length}</span><span class="spacer"></span><span class="muted small">admin · reviewer (approve, assign) · inspector (inspect, repair) · driver (upload) · viewer (read)</span></div>
       <div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Role</th><th>Sign-in</th><th>Last sign-in</th><th>Status</th></tr></thead><tbody>
       ${users.map((u) => `<tr data-id="${u.id}"><td><b>${esc(u.name || u.email)}</b><div class="muted small">${esc(u.email)}</div></td>
         <td><select class="input input-sm role" aria-label="Role of ${esc(u.email)}" ${u.id === session.user?.id ? "disabled" : ""}>${roles.map((r) => `<option ${r === u.role ? "selected" : ""}>${r}</option>`).join("")}</select></td>
@@ -2199,6 +2383,7 @@ async function loadSession() {
   session.sso = me.sso; session.authEnabled = me.auth_enabled;
   if (!me.authenticated) { session.user = null; session.perms = []; return false; }
   Object.assign(session, { user: me.user, csrf: me.csrf, perms: me.permissions });
+  Object.assign(WF, me.workflow || {});
   const u = me.user;
   $("#user-chip").innerHTML = `<span class="avatar pill ${ROLE_TONE[u.role] || ""}">${esc((u.name || u.email)[0].toUpperCase())}</span><span class="user-text hide-sm"><span class="user-name">${esc(u.name || u.email)}</span><span class="user-role">${esc(u.role)}</span></span>`;
   $("#user-chip").hidden = false;
@@ -2216,7 +2401,7 @@ async function signOut() {
 const palette = {
   el: $("#palette"), q: $("#palette-q"), list: $("#palette-list"), pending: [], items: [], sel: 0, opener: null,
   commands() {
-    const nav = [["overview", "grid"], ["trips", "video"], ["review", "inbox"], ["reports", "file"], ["map", "map"],
+    const nav = [["overview", "grid"], ["trips", "video"], ["review", "inbox"], ...(can("inspect") ? [["inspections", "eye"]] : []), ["reports", "file"], ["map", "map"],
       ["conditions", "activity"], ["activity", "activity"], ["standards", "clock"], ["authorities", "building"], ["system", "shield"],
       ...(can("admin") ? [["users", "user"]] : [])]
       .map(([r, ic]) => ({ group: "Go to", label: ROUTES[r][0], hint: ROUTES[r][1], icon: ic, run: () => (location.hash = `#/${r}`) }));
