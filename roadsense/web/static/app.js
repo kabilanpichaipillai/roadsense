@@ -402,8 +402,8 @@ async function renderOverview() {
         ${drop(total - repaired, "not repaired yet")}
         ${stop(repaired, "Repaired", `${num(s.repair_verification?.verified)} independently verified`)}
       </ol>`, "ov-road")}
-    ${impactCard(s.impact)}
     ${repairCard(s.repair_verification)}
+    ${impactCard(s.impact)}
     <div class="ov-row section">
       <section class="card ov-map"><div class="card-head"><h2>Where the damage is</h2><span class="spacer"></span>${more("#/map", "Open full map")}</div><div id="mini-map" class="map-mini"></div></section>
       <section class="card"><div class="card-head"><h2>Worth a look</h2></div><ul class="ov-sigs">${signals}</ul></section>
@@ -418,12 +418,14 @@ async function renderOverview() {
   bindFolds(view);
 }
 
-/* Overview folds: detail-heavy sections collapse to their title and a one-line summary. Closed by default (the page
-   leads with the review queue); each section's state is remembered per browser. */
+/* Overview folds: detail-heavy sections collapse to their title and a one-line summary. The pipeline is open by
+   default, the rest closed (the page leads with the review queue); each section's state is remembered per browser. */
 const FOLD_KEY = "rs-ov-folds";
+const FOLD_OPEN = ["road"]; // open until the person closes it: the pipeline is the page's story
 function foldState() { try { return JSON.parse(localStorage.getItem(FOLD_KEY) || "{}"); } catch (e) { return {}; } }
 function fold(id, title, summary, desc, body, cls = "") {
-  const open = !!foldState()[id];
+  const st = foldState();
+  const open = id in st ? !!st[id] : FOLD_OPEN.includes(id);
   return `<section class="card ov-fold section ${cls}" data-fold="${id}" aria-labelledby="fold-${id}-h">
     <h2 class="ov-fold-h" id="fold-${id}-h"><button type="button" class="ov-fold-btn" aria-expanded="${open}" aria-controls="fold-${id}">
       <span class="ov-fold-title">${esc(title)}</span><span class="ov-fold-sum">${summary}</span>${icon("arrow", "ov-fold-chev")}</button></h2>

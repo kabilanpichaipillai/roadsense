@@ -936,7 +936,7 @@ body.loading .topbar::after { opacity: 1; animation: ns-dash .7s linear infinite
 .ov-actions .btn-primary { box-shadow: var(--primary-glow); }
 
 .ov-status { align-self: center; min-width: 0; }
-.ov-k { font: 500 var(--text-xs)/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: var(--space-3); }
+.ov-k { font: 500 var(--text-xs)/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: var(--space-2); }
 .ov-stack { display: flex; gap: 3px; height: 8px; border-radius: var(--radius-full); overflow: hidden; }
 .ov-seg { display: block; min-width: 8px; background: var(--c, var(--border-strong)); transform-origin: left;
   animation: ov-grow .8s var(--ease) both; transition: filter var(--dur-fast); }
@@ -951,8 +951,8 @@ body.loading .topbar::after { opacity: 1; animation: ns-dash .7s linear infinite
 [data-stage="done"] { --c: color-mix(in srgb, var(--green) 70%, var(--surface)); }
 .ov-stage-name::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 10px;
   background: var(--c, var(--border-strong)); vertical-align: 1px; }
-.ov-stages { list-style: none; margin: var(--space-4) 0 0; padding: 0; }
-.ov-stage { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--space-3); padding: 10px 0; border-top: 1px solid var(--border); }
+.ov-stages { list-style: none; margin: var(--space-3) 0 0; padding: 0; }
+.ov-stage { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 var(--space-3); padding: 6px 0; border-top: 1px solid var(--border); }
 .ov-stage:first-child { border-top: 0; }
 .ov-stage-name { color: var(--text); font-weight: 500; }
 .ov-stage-name:hover { color: var(--primary-text); text-decoration: none; }
