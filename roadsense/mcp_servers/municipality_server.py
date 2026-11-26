@@ -53,6 +53,11 @@ def deliver(report_id: int, actor: str = "mcp:municipality") -> dict:
             raise ToolError(f"report is {workflow.label(report).lower()!r}; only reviewer-approved reports awaiting "
                             "inspection can be referred")
         payload = _approved_payload(conn, report)
+        if not settings.forwarding:
+            raise ToolError("forwarding to other road authorities is off (ROADSENSE_FORWARD_MODE): nothing is sent")
+        if not workflow.will_refer(report):
+            raise ToolError(f"{report['jurisdiction']!r} is not another road authority RoadSense refers to: the "
+                            "report stays in RoadSense for inspection and repair")
         digest = open311.payload_hash(payload)
         attempt = (report["delivery_attempts"] or 0) + 1
         try:

@@ -251,9 +251,9 @@ def test_reopening_preserves_both_events_and_restarts_tracking(db, monkeypatch):
     assert c["completion_due"] == "2026-12-03T03:59:59+00:00"  # the original deadline still applies
 
 
-def test_delivery_starts_the_clock(db, monkeypatch):
-    approve_rules()
-    r = filed(start=False)  # approved, as the reviewer leaves it
+def test_referral_starts_the_other_authoritys_clock(db, forwarding, monkeypatch):
+    approve_rules(NSPW)
+    r = filed(start=False, jurisdiction=NSPW)  # approved, as the reviewer leaves it
     monkeypatch.setattr(delivery, "submit", lambda *a, **k: {"channel": "open311", "service_request_id": "55"})
     municipality_server.deliver(r["id"])
     c = clock(r["id"])

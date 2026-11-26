@@ -27,6 +27,14 @@ def db():
     yield
 
 
+@pytest.fixture
+def forwarding():
+    """ROADSENSE_FORWARD_MODE=on for one test: reports on roads other authorities own are referred to them."""
+    object.__setattr__(settings, "forward_mode", "on")  # settings is frozen
+    yield
+    object.__setattr__(settings, "forward_mode", "off")
+
+
 def add_event(event_id: str, lat: float, lon: float, code: str = "D40", trip: str = "trip1", status: str = "verified",
               area: float = 0.03, conf: float = 0.8, frames: int = 5):
     with session() as conn:

@@ -255,3 +255,63 @@ def test_one_report_walks_the_whole_workflow_with_an_intact_ledger(staff):
         c = conn.execute("SELECT stage, reopened_count, completed_at FROM service_clocks WHERE report_id = ?",
                          (rid,)).fetchone()
     assert tuple(c)[:2] == ("closed", 1) and c[2]
+
+
+# ---------------- forwarding (ROADSENSE_FORWARD_MODE) ----------------
+def test_by_default_approving_never_contacts_anything(staff, monkeypatch):
+    import httpx
+
+    from roadsense.core import delivery
+    from roadsense.mcp_servers import municipality_server
+    from roadsense.services import jobs
+
+    def boom(*a, **k):
+        raise AssertionError("an external service was contacted")
+
+    for target, name in ((delivery, "submit"), (httpx, "post"), (httpx, "get"), (httpx.Client, "request")):
+        monkeypatch.setattr(target, name, boom)
+    queued = []
+    monkeypatch.setattr(agent_api.worker, "submit", lambda *a, **k: queued.append(a) or "job")
+    rid = new_report()
+    with session() as conn:
+        conn.execute("UPDATE reports SET jurisdiction = 'Nova Scotia Public Works' WHERE id = ?", (rid,))
+    r = api.post(f"/reports/{rid}/approve", json={"payload_hash": payload_hash(rid)}, headers=staff["rev"])
+    assert r.status_code == 200 and r.json()["status"] == "awaiting_inspection" and "referral" not in r.json()
+    assert queued == []  # not even queued
+    with pytest.raises(Exception, match="forwarding to other road authorities is off"):
+        municipality_server.deliver(rid)
+    assert api.post(f"/reports/{rid}/resend", headers=staff["rev"]).status_code == 409
+    with session() as conn:
+        conn.execute("UPDATE reports SET delivery_attempts = 1, next_attempt_at = '2020-01-01T00:00:00+00:00'")
+    assert "retry_deliveries" not in jobs.Worker().schedule()
+    assert api.get("/system", headers=AUTH).json()["workflow"]["forwarding"] is False
+
+
+def test_forwarding_refers_only_roads_another_authority_owns(staff, forwarding, monkeypatch):
+    from roadsense.core import delivery
+    from roadsense.mcp_servers import municipality_server
+
+    sent = []
+    monkeypatch.setattr(delivery, "submit", lambda p, r=None: sent.append(p["authority"]) or {
+        "channel": "referral", "service_request_id": "REF-9", "notice": "ok"})
+    queued = []
+    monkeypatch.setattr(agent_api.worker, "submit", lambda kind, **k: queued.append(k["report_id"]) or "job")
+    monkeypatch.setattr(agent_api.worker, "get", lambda job_id: {"id": job_id, "status": "queued"})
+    own, provincial = new_report(), new_report()
+    with session() as conn:
+        conn.execute("UPDATE reports SET jurisdiction = 'Nova Scotia Public Works' WHERE id = ?", (provincial,))
+    a = api.post(f"/reports/{own}/approve", params={"wait": False}, json={"payload_hash": payload_hash(own)},
+                 headers=staff["rev"]).json()
+    b = api.post(f"/reports/{provincial}/approve", params={"wait": False},
+                 json={"payload_hash": payload_hash(provincial)}, headers=staff["rev"]).json()
+    assert "referral" not in a and b["referral"]["status"] == "queued" and queued == [provincial]
+    with pytest.raises(Exception, match="not another road authority"):
+        municipality_server.deliver(own)
+    assert municipality_server.deliver(provincial)["service_request_id"] == "REF-9" and sent == [
+        "Nova Scotia Public Works"]
+    with session() as conn:
+        r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (provincial,)).fetchone())
+        clock = conn.execute("SELECT authority FROM service_clocks WHERE report_id = ?", (provincial,)).fetchone()
+        own_clock = conn.execute("SELECT authority FROM service_clocks WHERE report_id = ?", (own,)).fetchone()
+    assert (r["status"], r["closed_reason"]) == ("closed", "referred") and workflow.label(r) == "Closed (Referred)"
+    assert clock[0] == "Nova Scotia Public Works" and own_clock[0] == HRM

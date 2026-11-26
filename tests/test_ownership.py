@@ -197,9 +197,9 @@ def _status(rid):
 
 @pytest.mark.parametrize("authority, why", [
     ("Region of Queens Municipality", "no contact on file: forward manually"),  # referral, nobody to send it to
-    ("Private road", "no delivery channel"),                                    # not a public road authority
+    ("Private road", "not another road authority"),                             # not a public road authority
 ])
-def test_undeliverable_report_fails_once_and_is_not_marked_sent(db, authority, why):
+def test_undeliverable_report_fails_once_and_is_not_marked_sent(db, forwarding, authority, why):
     from mcp.server.fastmcp.exceptions import ToolError
 
     from roadsense.mcp_servers import municipality_server
@@ -207,8 +207,10 @@ def test_undeliverable_report_fails_once_and_is_not_marked_sent(db, authority, w
     with pytest.raises(ToolError, match=why):
         municipality_server.deliver(rid)
     s = _status(rid)
-    # not referred: it waits for staff (resend, or inspect it themselves) with the reason on the report
-    assert s["status"] == "awaiting_inspection" and s["delivery_attempts"] == 1 and why in s["last_error"]
+    # not referred: it waits for staff (resend, or inspect it themselves); a failed attempt keeps its reason
+    assert s["status"] == "awaiting_inspection"
+    assert (s["delivery_attempts"], why in (s["last_error"] or "")) == ((1, True) if authority != "Private road"
+                                                                        else (0, False))
     assert s["service_request_id"] is None
 
 

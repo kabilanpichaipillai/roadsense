@@ -150,6 +150,8 @@ def system():
         jobs_by = dict(conn.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status").fetchall())
         ext = conn.execute("SELECT COUNT(*), MAX(synced_at) FROM external_requests WHERE source = 'city_sr'").fetchone()
     return {
+        "workflow": {"municipality": settings.municipality, "forward_mode": settings.forward_mode,
+                     "forwarding": settings.forwarding},
         "warnings": settings.production_warnings,
         "residency": {"mode": settings.data_residency, "llm_hosts": settings.residency_llm_hosts,
                       "llm_base_url": settings.openrouter_base_url, "images_to_llm": False},
@@ -422,9 +424,11 @@ def payload(report_id: int):
 
 
 @app.post("/reports/{report_id}/approve", dependencies=AUTH)
-async def approve(report_id: int, payload_hash: str = Body(..., embed=True), who: Actor = Depends(actor)):
+async def approve(report_id: int, payload_hash: str = Body(..., embed=True), wait: bool = True,
+                  who: Actor = Depends(actor)):
     """The reviewer approves the report they were shown (refused if it changed in between): it moves to Awaiting
-    inspection. The approved payload is stored as a snapshot."""
+    inspection, with the approved payload stored as a snapshot. Nothing is sent anywhere, unless forwarding is on and
+    another authority owns the road: then the referral is queued (and shown as "referral" in the answer)."""
     with session() as conn:
         r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
         if r is None:
@@ -432,7 +436,14 @@ async def approve(report_id: int, payload_hash: str = Body(..., embed=True), who
         if r["status"] == "pending_approval" and not secrets.compare_digest(
                 open311.payload_hash(open311.build_payload(r)), payload_hash):
             raise HTTPException(409, "the report changed since you reviewed it; reload and review again")
-        return move(conn, report_id, "approve", who)
+        out = move(conn, report_id, "approve", who)
+    if not workflow.will_refer(out):
+        return out
+    job_id = worker.submit("file_report", actor=who.name, report_id=report_id)
+    job = await worker.wait(job_id, 300) if wait else worker.get(job_id)
+    with session() as conn:
+        out = public_report(row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()), who)
+    return {**out, "referral": job}
 
 
 @app.post("/reports/{report_id}/reject", dependencies=AUTH)
@@ -536,6 +547,8 @@ def reclassify(report_id: int, class_code: str = Body(..., embed=True), who: Act
 async def resend(report_id: int, wait: bool = True, who: Actor = Depends(actor)):
     """Retry a referral to another road authority now (after a failure, or once its system is back)."""
     who.need(REVIEW_ROLES)
+    if not settings.forwarding:
+        raise HTTPException(409, "forwarding to other road authorities is off (ROADSENSE_FORWARD_MODE)")
     with session() as conn:
         r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
         if r is None:

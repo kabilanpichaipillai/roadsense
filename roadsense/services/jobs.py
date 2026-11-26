@@ -107,10 +107,12 @@ class Worker:
         now_s = now_s or time.time()
         due = []
         with session() as conn:
-            if conn.execute("SELECT 1 FROM reports WHERE status = 'awaiting_inspection' AND delivery_attempts > "
+            forwarding = settings.forwarding  # off: nothing is ever retried towards another authority
+            if forwarding and conn.execute("SELECT 1 FROM reports WHERE status = 'awaiting_inspection' AND delivery_attempts > "
                             "0 AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?", (now(),)).fetchone():
                 due.append("retry_deliveries")
-            if conn.execute("SELECT 1 FROM reports WHERE closed_reason = 'referred' AND pending_update = 1").fetchone():
+            if forwarding and conn.execute("SELECT 1 FROM reports WHERE closed_reason = 'referred' AND "
+                                           "pending_update = 1").fetchone():
                 due.append("push_updates")
         periods = {"follow_up": settings.follow_up_minutes * 60, "purge": 3600}
         from ..core import exposure

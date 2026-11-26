@@ -16,6 +16,7 @@ from roadsense.common.db import row, session
 from roadsense.core import condition, delivery, external, media, open311, privacy, reports, service_standards, workflow
 from roadsense.mcp_servers import municipality_server, reports_server
 
+NSPW = "Nova Scotia Public Works"
 HRM = "Halifax Regional Municipality"
 AUTH = {"Authorization": "Bearer test-token"}
 
@@ -26,10 +27,10 @@ def evidence(event_id, verified=0.8, verifier_class=None):
                      (verified, verifier_class, event_id))
 
 
-def make_report(event_id, lat=44.643, lon=-63.58, code="D40", trip="trip1"):
+def make_report(event_id, lat=44.643, lon=-63.58, code="D40", trip="trip1", jurisdiction=HRM):
     add_event(event_id, lat, lon, code=code, trip=trip)
     with session() as conn:
-        return reports.create_or_merge(conn, event_id, "high", "x", HRM, 15, jurisdiction=HRM)
+        return reports.create_or_merge(conn, event_id, "high", "x", HRM, 15, jurisdiction=jurisdiction)
 
 
 def approve(report_id, by="reviewer@roadsense.test"):
@@ -99,13 +100,13 @@ def test_severity_band():
 
 
 # ---------------- delivery ----------------
-def test_delivery_sends_the_approved_snapshot_and_retries(db, monkeypatch):
-    rid = make_report("ev-d1")["report"]["id"]
+def test_delivery_sends_the_approved_snapshot_and_retries(db, forwarding, monkeypatch):
+    rid = make_report("ev-d1", jurisdiction=NSPW)["report"]["id"]  # a provincial road: referred
     approved = approve(rid)
     add_event("ev-d2", 44.64301, -63.58, trip="trip2")  # a second driver after approval
     with session() as conn:
-        merged = reports.create_or_merge(conn, "ev-d2", "high", "x", HRM, 15, jurisdiction=HRM)["report"]
-    # still the municipality's own report: nothing to push anywhere
+        merged = reports.create_or_merge(conn, "ev-d2", "high", "x", HRM, 15, jurisdiction=NSPW)["report"]
+    # not referred yet: nothing to push anywhere
     assert merged["confirmations"] == 2 and merged["pending_update"] == 0
 
     calls = []
@@ -130,7 +131,7 @@ def test_delivery_sends_the_approved_snapshot_and_retries(db, monkeypatch):
 
     add_event("ev-d3", 44.64302, -63.58, trip="trip3")  # a third driver after the referral: pushed as an update
     with session() as conn:
-        merged = reports.create_or_merge(conn, "ev-d3", "high", "x", HRM, 15, jurisdiction=HRM)["report"]
+        merged = reports.create_or_merge(conn, "ev-d3", "high", "x", HRM, 15, jurisdiction=NSPW)["report"]
     assert merged["id"] == rid and merged["confirmations"] == 3 and merged["pending_update"] == 1
 
     sent = []
@@ -138,8 +139,8 @@ def test_delivery_sends_the_approved_snapshot_and_retries(db, monkeypatch):
     assert municipality_server.push_update(rid)["ok"] and "3 independent drivers" in sent[0][3]
 
 
-def test_delivery_gives_up_after_max_attempts(db, monkeypatch):
-    rid = make_report("ev-m1")["report"]["id"]
+def test_delivery_gives_up_after_max_attempts(db, forwarding, monkeypatch):
+    rid = make_report("ev-m1", jurisdiction=NSPW)["report"]["id"]
     approve(rid)
     monkeypatch.setattr(delivery, "submit", lambda *a, **k: (_ for _ in ()).throw(delivery.DeliveryError("down")))
     for _ in range(settings.max_delivery_attempts):
@@ -307,7 +308,7 @@ def test_reviewer_can_correct_a_disputed_class(db):
 
 
 # ---------------- jobs ----------------
-def test_jobs_are_durable_and_the_scheduler_queues_retries(db):
+def test_jobs_are_durable_and_the_scheduler_queues_retries(db, forwarding):
     from roadsense.services.jobs import Worker
 
     w = Worker()
@@ -321,6 +322,11 @@ def test_jobs_are_durable_and_the_scheduler_queues_retries(db):
         conn.execute("UPDATE reports SET delivery_attempts = 1, next_attempt_at = '2020-01-01T00:00:00+00:00'")
     assert "retry_deliveries" in w.schedule()
     assert "retry_deliveries" not in w.schedule()  # not queued twice
+    object.__setattr__(settings, "forward_mode", "off")
+    w.last_run.clear()
+    with session() as conn:
+        conn.execute("UPDATE jobs SET status = 'done'")
+    assert "retry_deliveries" not in w.schedule()  # forwarding off: nothing is ever retried outside
 
 
 # ---------------- identity ----------------

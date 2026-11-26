@@ -293,8 +293,12 @@ CLOCK_EVENTS = {"assign": ("acknowledged",), "no_repair_needed": ("inspection_st
 
 
 def will_refer(report: dict) -> bool:
-    """Forwarding is on and another authority owns the road: its own clock starts when the referral is sent."""
-    return False
+    """Forwarding is on and another authority owns the road: after approval the report is referred to it, and that
+    authority's clock starts when the referral is sent (ROADSENSE_FORWARD_MODE, off by default)."""
+    from ..common.config import settings
+    from .ownership import owned_here
+
+    return settings.forwarding and not owned_here(report.get("jurisdiction"))
 
 
 def _clock(conn, action, before, report, actor, ts) -> None:
