@@ -217,6 +217,9 @@ def check_passes(conn: sqlite3.Connection, trip_id: str, actor: str = ACTOR) -> 
                       {"trips": sorted(trips), "reason": rec["reason"], "hash": rec["evidence_hash"]})
                 service_standards.note_repair_check(conn, r["id"], "repair_verified", actor, rec["reason"],
                                                     f"sha256:{rec['evidence_hash']}")
+                # verified is final: the clock closes (the crew's repair_completed date stays the measured one)
+                service_standards.record_event(conn, r["id"], "report_closed", actor, "roadsense:repair_verification",
+                                               note="repair independently verified")
                 out["verified"].append(r["id"])
             else:
                 out["inconclusive"] += 1

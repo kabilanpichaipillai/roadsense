@@ -131,6 +131,12 @@ def test_repair_is_verified_only_after_enough_independent_clean_passes(db):
     r = get(rid)
     assert r["verification_status"] == "verified" and r["status"] == "repaired"
     assert repair.lifecycle(r) == "Repaired (verified)"
+    with session() as conn:  # verified is final: the service clock closes, after the crew's completion
+        c = service_standards.get_clock(conn, rid)
+        types = [e["event_type"] for e in ledger.entries(conn, rid)]
+        assert ledger.verify(conn, rid)["ok"]
+    assert c["stage"] == "closed" and c["completed_at"] and c["closed_at"]
+    assert types.index("repair_completed") < types.index("repair_verified") < types.index("report_closed")
     assert hist(rid)[-1]["result"] == "verified" and hist(rid)[-1]["followup_image"] == "pass:p-trip3"
 
 

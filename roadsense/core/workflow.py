@@ -276,17 +276,43 @@ def transition(conn: sqlite3.Connection, report_id: int, action: str, actor: str
     sets.update(status=spec.target, updated_at=ts)
     conn.execute(f"UPDATE reports SET {', '.join(f'{k} = ?' for k in sets)} WHERE id = ?",
                  [*sets.values(), report_id])
-    ledger.append(conn, report_id, f"workflow_{action}", actor,
-                  {"report_id": report_id, "action": action, "from": r["status"], "to": spec.target,
-                   "closed_reason": sets.get("closed_reason"), "role": role, "user_id": user_id,
-                   **{k: v for k, v in detail.items() if v is not None}}, ts=ts)
+    entry = ledger.append(conn, report_id, f"workflow_{action}", actor,
+                          {"report_id": report_id, "action": action, "from": r["status"], "to": spec.target,
+                           "closed_reason": sets.get("closed_reason"), "role": role, "user_id": user_id,
+                           **{k: v for k, v in detail.items() if v is not None}}, ts=ts)
+    # the clock remembers the chain head (ledger.verify): every entry of the report's chain moves it
+    conn.execute("UPDATE service_clocks SET ledger_head = ? WHERE report_id = ?", (entry["hash"], report_id))
     updated = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
     _clock(conn, action, r, updated, actor, ts)
     return updated
 
 
+# the service-standards clock measures the municipality from approval: these are the steps it records
+CLOCK_EVENTS = {"assign": ("acknowledged",), "no_repair_needed": ("inspection_started", "report_closed"),
+                "repaired": ("repair_completed",), "reopen": ("report_reopened",)}
+
+
+def will_refer(report: dict) -> bool:
+    """Forwarding is on and another authority owns the road: its own clock starts when the referral is sent."""
+    return False
+
+
 def _clock(conn, action, before, report, actor, ts) -> None:
-    """Feed the service-standards clock (core.service_standards) the steps it measures. Set up in step 3."""
+    """Feed the service-standards clock (core.service_standards) the steps it measures. A tracking problem is audited
+    and never blocks the person's step (the sweep backfills a missing clock)."""
+    from . import service_standards as ss
+
+    events = CLOCK_EVENTS.get(action, ())
+    if action == "repair_needed" and before["status"] == "inspection_assigned":
+        events = ("inspection_started",)
+    try:
+        if action == "approve" and not will_refer(report):
+            ss.start_clock(conn, report, actor, submitted_at=ts, source="workflow")
+        for ev in events:
+            ss.record_event(conn, report["id"], ev, actor, "workflow", at=ts,
+                            note=f"{ACTIONS[action].label}: {label(report).lower()}")
+    except Exception as e:  # noqa: BLE001
+        audit(conn, actor, "service_clock_failed", f"report:{report['id']}", f"{action}: {e}"[:500])
 
 
 # ---------------- migration from the go-between statuses ----------------

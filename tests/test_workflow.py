@@ -4,7 +4,7 @@ from datetime import date, timedelta
 import pytest
 from conftest import add_event
 
-from roadsense.common.db import connect, now, row, session
+from roadsense.common.db import now, row, session
 from roadsense.core import ledger, reports, workflow
 from roadsense.core.workflow import WorkflowError
 
@@ -85,7 +85,7 @@ def test_every_legal_transition(insp, start, action, fields, to, reason):
     r = act(rid, action, **fields)
     assert r["status"] == to and r["closed_reason"] == reason
     with session() as conn:
-        last = ledger.entries(conn, rid)[-1]
+        last = [e for e in ledger.entries(conn, rid) if e["event_type"].startswith("workflow_")][-1]
         assert ledger.verify(conn, rid)["ok"]
     assert last["event_type"] == f"workflow_{action}" and last["actor"] == "rev@x.test"
     assert last["data"]["from"] == start and last["data"]["to"] == to
@@ -215,7 +215,7 @@ def test_reschedule_records_old_and_new_date(insp):
     later = (TODAY + timedelta(days=30)).isoformat()
     assert act(rid, "reschedule", repair_eta=later)["repair_eta"] == later
     with session() as conn:
-        data = ledger.entries(conn, rid)[-1]["data"]
+        data = ledger.entries(conn, rid)[-1]["data"]  # reschedule moves no clock: the workflow entry is the last
     assert data["repair_eta"] == {"from": SOON, "to": later}
 
 
@@ -257,7 +257,9 @@ def test_backdated_transition_uses_the_given_time(insp):
     r = act(rid, "approve", at="2026-11-01T12:00:00+00:00")
     assert r["approved_at"] == "2026-11-01T12:00:00+00:00"
     with session() as conn:
-        assert ledger.entries(conn, rid)[-1]["ts"] == "2026-11-01T12:00:00+00:00"
+        entry = next(e for e in ledger.entries(conn, rid) if e["event_type"] == "workflow_approve")
+        clock = conn.execute("SELECT submitted_at FROM service_clocks WHERE report_id = ?", (rid,)).fetchone()[0]
+    assert entry["ts"] == clock == "2026-11-01T12:00:00+00:00"
 
 
 def test_labels_cover_closed_reasons():
@@ -283,7 +285,7 @@ def test_old_statuses_migrate_once(db):
                          (old, verification, "2026-10-01T00:00:00+00:00" if old == "fixed" else None, rid))
             conn.commit()
         ids.append(rid)
-    with connect() as conn:
+    with session() as conn:
         workflow.migrate(conn)
     for rid, (old, verification, new, reason) in zip(ids, OLD):
         r = get(rid)

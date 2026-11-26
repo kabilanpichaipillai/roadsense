@@ -28,9 +28,13 @@ def filed(code="D40", band="S4", jurisdiction=HRM, at=MON, road_class=None, star
     with session() as conn:
         r = reports.create_or_merge(conn, event_id, "high", "x", jurisdiction, 15, jurisdiction=jurisdiction,
                                     band=band, road_class=road_class)["report"]
+        if not start:  # an old database: approved before tracking existed (no workflow step, no clock)
+            p = open311.build_payload(r)
+            conn.execute("UPDATE reports SET status = 'awaiting_inspection', approved_at = ?, approved_payload = ?, "
+                         "approved_payload_hash = ? WHERE id = ?",
+                         (at, json.dumps(p, sort_keys=True), open311.payload_hash(p), r["id"]))
+            return row(conn.execute("SELECT * FROM reports WHERE id = ?", (r["id"],)).fetchone())
         r = workflow.transition(conn, r["id"], "approve", "reviewer@roadsense.test", "reviewer", at=at)
-        if not start:
-            return r
         r = workflow.transition(conn, r["id"], "refer", "mcp:municipality", "system", at=at,
                                 service_request_id=str(r["id"]), channel="open311")
         return ss.start_clock(conn, r, "mcp:municipality", submitted_at=at)
@@ -477,3 +481,64 @@ def test_old_contradictory_levels_are_fixed_only_before_review(db):
         assert reports.normalise_severity(conn) == 1
         levels = dict(conn.execute("SELECT id, severity FROM reports WHERE id IN (?, ?)", (pending["id"], sent["id"])))
     assert levels == {pending["id"]: "high", sent["id"]: "medium"}  # what the authority received is not rewritten
+
+
+# ---------------- the municipal workflow drives the clock ----------------
+def _inspector():
+    with session() as conn:
+        conn.execute("INSERT OR IGNORE INTO users (email, role, created_at) VALUES ('i@x.test', 'inspector', ?)", (MON,))
+        return conn.execute("SELECT id FROM users WHERE email = 'i@x.test'").fetchone()[0]
+
+
+def _own_report(band="S4"):
+    _n["i"] += 1
+    event_id = f"ev-wfc{_n['i']}"
+    add_event(event_id, 44.60 + _n["i"] * 0.002, -63.58)
+    with session() as conn:
+        return reports.create_or_merge(conn, event_id, "high", "x", HRM, 15, jurisdiction=HRM, band=band)["report"]
+
+
+def _step(rid, action, at, **fields):
+    with session() as conn:
+        return workflow.transition(conn, rid, action, "staff@roadsense.test", "admin", at=at, **fields)
+
+
+def test_the_workflow_moves_the_clock_from_approval_to_repair(db):
+    approve_rules()
+    rid, insp = _own_report()["id"], _inspector()
+    _step(rid, "approve", MON)
+    c = clock(rid)
+    assert c["submitted_at"] == MON and c["completion_due"] == "2026-12-03T03:59:59+00:00"  # S4: 7 business days
+    _step(rid, "assign", "2026-11-23T15:00:00+00:00", inspector_id=insp)
+    _step(rid, "repair_needed", "2026-11-24T15:00:00+00:00", repair_eta="2026-11-30")
+    assert status(rid, "2026-11-25T12:00:00+00:00") == ss.WITHIN
+    _step(rid, "repaired", "2026-11-27T15:00:00+00:00")
+    c = clock(rid)
+    assert ledger_types(rid) == ["report_submitted", "acknowledged", "inspection_started", "repair_completed"]
+    assert c["stage"] == "repair_completed" and c["acknowledged_at"] == "2026-11-23T15:00:00+00:00"
+    assert c["inspection_at"] == "2026-11-24T15:00:00+00:00" and status(rid, "2026-12-20T00:00:00+00:00") == ss.MET
+
+    _step(rid, "reopen", "2026-12-01T15:00:00+00:00", reason="patch failed")
+    assert clock(rid)["reopened_count"] == 1 and clock(rid)["completed_at"] is None
+    _step(rid, "repair_needed", "2026-12-01T16:00:00+00:00", repair_eta="2026-12-10")
+    _step(rid, "repaired", "2026-12-08T15:00:00+00:00")
+    assert ledger_types(rid)[-2:] == ["report_reopened", "repair_completed"]
+    assert status(rid, "2026-12-20T00:00:00+00:00") == ss.MISSED  # the second repair came after the deadline
+    with session() as conn:
+        assert ledger.verify(conn, rid)["ok"]
+
+
+def test_no_repair_needed_closes_the_clock_without_a_repair(db):
+    approve_rules()
+    rid, insp = _own_report()["id"], _inspector()
+    _step(rid, "approve", MON)
+    _step(rid, "assign", MON, inspector_id=insp)
+    _step(rid, "no_repair_needed", "2026-11-24T15:00:00+00:00", notes="surface wear only")
+    c = clock(rid)
+    assert c["closed_at"] and c["completed_at"] is None and "repair_completed" not in ledger_types(rid)
+
+
+def test_rejected_reports_never_get_a_clock(db):
+    rid = _own_report()["id"]
+    _step(rid, "reject", MON)
+    assert clock(rid) is None
