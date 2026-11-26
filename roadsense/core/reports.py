@@ -18,7 +18,10 @@ CLASS_WEIGHT = {"D40": 1.5, "D20": 1.2, "D00": 1.0, "D10": 1.0}  # potholes dama
 CLASS_NAMES = {"D00": "Longitudinal crack", "D10": "Transverse crack", "D20": "Alligator crack", "D40": "Pothole"}
 OPEN_STATUSES = ("pending_approval", "approved", "submitted", "delivery_failed")
 VERDICTS = ("confirmed", "disputed", "rejected")
-HIGH_WIDTH_M = 0.25  # a pothole at least this wide is high severity (depth is not measurable from video)
+# One severity scale: the band (S1 minor .. S4 urgent). The low/medium/high label is only a name for the band, so the
+# words the authority reads and the band that drives deadlines and risk can never disagree.
+BAND_LEVEL = {"S1": "low", "S2": "medium", "S3": "high", "S4": "high"}
+UNSURE_CONFIDENCE = 0.35  # below this the detector is unsure: the band is capped at S2 (never "high" on a guess)
 JOLT_HIGH_G = 0.6    # a vertical jolt this strong from the phone/dashcam IMU corroborates a deep pothole
 
 
@@ -81,39 +84,27 @@ def severity_band(class_code: str, width_m: float | None, box_area_ratio: float,
     return band
 
 
-def repair_target_days(band: str, road_class: str | None) -> int | None:
-    """Repair target by band and road class from the regional rules (O. Reg. 239/02-style table)."""
-    table = _rules().get("repair_target_days", {}).get(band)
-    if not table:
-        return None
-    return table.get(road_class or "", table.get("default"))
+def level(band: str | None, fallback: str = "medium") -> str:
+    """The low/medium/high name of a band (reports from before bands existed keep their stored level)."""
+    return BAND_LEVEL.get(band or "", fallback)
 
 
 def estimate_severity(class_code: str, box_area_ratio: float, confidence: float, frames_seen: int,
                       width_m: float | None = None, jolt_g: float | None = None) -> dict:
-    """Severity from what the camera saw. Potholes use estimated width against the high-severity width when the
-    camera geometry gave one; otherwise the box area at the best frame is the size proxy."""
-    high_width = _rules().get("high_width_m", HIGH_WIDTH_M)
-    if class_code == "D40" and width_m is not None:
-        level = "high" if width_m >= high_width else ("medium" if width_m >= 0.10 else "low")
-        size = f"about {width_m * 100:.0f} cm wide"
-    elif class_code == "D40":
-        level = "high" if box_area_ratio >= 0.02 else "medium"
-        size = f"covering {box_area_ratio:.1%} of the frame"
-    elif class_code == "D20":
-        level = "medium" if box_area_ratio >= 0.03 else "low"
-        size = f"covering {box_area_ratio:.1%} of the frame"
-    else:
-        level = "medium" if box_area_ratio >= 0.06 else "low"
-        size = f"covering {box_area_ratio:.1%} of the frame"
-    if class_code == "D40" and jolt_g is not None and jolt_g >= JOLT_HIGH_G and level != "high":
-        level = "high"
-        size += f", {jolt_g:.1f} g jolt"
-    if confidence < 0.35 and level == "high":
-        level = "medium"
+    """Severity from what the camera saw: the band from width (potholes, when the camera geometry gave one) or box
+    area, raised one step by a strong jolt, capped at S2 when the detector is unsure. The level is its name."""
     band = severity_band(class_code, width_m, box_area_ratio, jolt_g)
-    reason = f"{class_code} {size}, confidence {confidence:.2f}, seen in {frames_seen} frames"
-    return {"severity": level, "width_m": width_m, "band": band, "reason": reason}
+    if class_code == "D40" and width_m is not None:
+        size = f"about {width_m * 100:.0f} cm wide"
+    else:
+        size = f"covering {box_area_ratio:.1%} of the frame"
+    if class_code == "D40" and jolt_g is not None and jolt_g >= JOLT_HIGH_G:
+        size += f", {jolt_g:.1f} g jolt"
+    if confidence < UNSURE_CONFIDENCE and band in ("S3", "S4"):
+        band = "S2"
+        size += ", capped at S2 because the detector is unsure"
+    reason = f"{class_code} {size}, confidence {confidence:.2f}, seen in {frames_seen} frames: band {band}"
+    return {"severity": level(band), "width_m": width_m, "band": band, "reason": reason}
 
 
 def priority(severity: str, class_code: str, confirmations: int) -> float:
@@ -225,31 +216,29 @@ def create_or_merge(conn: sqlite3.Connection, event_id: str, severity: str, addr
         # a confirmation is an independent pass: several sightings in the same trip count once
         trips = {t for (t,) in conn.execute("SELECT DISTINCT trip_id FROM events WHERE report_id = ?", (r["id"],))}
         confirmations = len(trips | {event["trip_id"]})
-        sev = max(r["severity"], severity, key=SEVERITY_WEIGHT.get)
         new_band = max(filter(None, [r.get("severity_band"), band]), default=None)
+        sev = level(new_band, max(r["severity"], severity, key=SEVERITY_WEIGHT.get))
         # after approval the payload is frozen; new evidence is pushed as an update once the request is filed
         needs_update = r["status"] in ("approved", "submitted", "delivery_failed") and (
             confirmations != r["confirmations"] or sev != r["severity"])
         conn.execute("UPDATE reports SET confirmations = ?, severity = ?, priority = ?, updated_at = ?, "
                      "class_disputed = MAX(class_disputed, ?), "
                      "severity_band = COALESCE(?, severity_band), "
-                     "repair_target_days = COALESCE(?, repair_target_days), "
                      "pending_update = MAX(pending_update, ?) WHERE id = ?",
                      (confirmations, sev, priority(sev, r["class_code"], confirmations), ts,
-                      event["class_disputed"], new_band,
-                      repair_target_days(new_band, r.get("road_class")) if new_band else None, int(needs_update),
-                      r["id"]))
+                      event["class_disputed"], new_band, int(needs_update), r["id"]))
         report_id, action = r["id"], "merged"
     else:
+        severity = level(band, severity)
         cur = conn.execute(
             "INSERT INTO reports (trip_id, class_code, class_name, lat, lon, address, municipality, jurisdiction,"
             " severity, priority, best_event_id, width_m, class_disputed, rationale, severity_band,"
-            " repair_target_days, road_class, road_name, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " road_class, road_name, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (event["trip_id"], event["class_code"], event["class_name"], event["lat"], event["lon"], address,
              municipality, jurisdiction or municipality, severity, priority(severity, event["class_code"], 1),
              event_id, event["width_m"], event["class_disputed"], (rationale or "")[:500], band,
-             repair_target_days(band, road_class) if band else None, road_class, road_name, ts, ts))
+             road_class, road_name, ts, ts))
         report_id, action = cur.lastrowid, "created"
     conn.execute("UPDATE events SET report_id = ?, status = 'processed', road_class = COALESCE(?, road_class), "
                  "road_name = COALESCE(?, road_name) WHERE id = ?", (report_id, road_class, road_name, event_id))
@@ -304,10 +293,33 @@ def reclassify(conn: sqlite3.Connection, report_id: int, class_code: str, actor:
         raise ValueError("the class can only change before the report is approved")
     if class_code not in CLASS_NAMES:
         raise ValueError(f"class must be one of {sorted(CLASS_NAMES)}")
+    band, sev = r.get("severity_band"), r["severity"]
+    best = row(conn.execute("SELECT * FROM events WHERE id = ?", (r["best_event_id"],)).fetchone())
+    if best:  # the band depends on the class (line cracks are capped at S2, potholes use width): recompute it
+        conf = best.get("verified_confidence") or best.get("recheck_confidence") or best["confidence"]
+        est = estimate_severity(class_code, best["box_area_ratio"], conf, best["frames_seen"], best.get("width_m"),
+                                best.get("jolt_g"))
+        band, sev = est["band"], est["severity"]
     conn.execute("UPDATE reports SET class_code = ?, class_name = ?, class_disputed = 0, draft_description = NULL, "
-                 "priority = ?, updated_at = ? WHERE id = ?",
-                 (class_code, CLASS_NAMES[class_code], priority(r["severity"], class_code, r["confirmations"]), now(),
-                  report_id))
+                 "severity = ?, severity_band = ?, priority = ?, updated_at = ? WHERE id = ?",
+                 (class_code, CLASS_NAMES[class_code], sev, band, priority(sev, class_code, r["confirmations"]),
+                  now(), report_id))
     record_label(conn, report_id, "reclassified", actor, class_code)
     audit(conn, actor, "report_reclassified", f"report:{report_id}", {"from": r["class_code"], "to": class_code})
     return row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
+
+
+def normalise_severity(conn: sqlite3.Connection, actor: str = "system") -> int:
+    """Reports created before the band was the one severity scale may carry a level that contradicts their band.
+    Only reports still awaiting review are corrected: what an authority already received is never rewritten."""
+    fixed = 0
+    for r in conn.execute("SELECT id, class_code, severity, severity_band, confirmations FROM reports "
+                          "WHERE status = 'pending_approval' AND severity_band IS NOT NULL").fetchall():
+        want = level(r["severity_band"], r["severity"])
+        if want != r["severity"]:
+            conn.execute("UPDATE reports SET severity = ?, priority = ?, updated_at = ? WHERE id = ?",
+                         (want, priority(want, r["class_code"], r["confirmations"]), now(), r["id"]))
+            audit(conn, actor, "severity_normalised", f"report:{r['id']}",
+                  {"from": r["severity"], "to": want, "band": r["severity_band"]})
+            fixed += 1
+    return fixed

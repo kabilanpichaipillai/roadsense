@@ -434,7 +434,9 @@ MIGRATIONS = {
                 "approved_payload": "TEXT", "approved_by": "TEXT", "approved_at": "TEXT", "rejected_by": "TEXT",
                 "delivery_attempts": "INTEGER NOT NULL DEFAULT 0", "last_error": "TEXT", "next_attempt_at": "TEXT",
                 "external_ref": "TEXT", "corroborations": "INTEGER NOT NULL DEFAULT 0",
-                "severity_band": "TEXT", "repair_target_days": "INTEGER", "road_class": "TEXT", "road_name": "TEXT",
+                "severity_band": "TEXT",
+                # repair_target_days is no longer written: service standards are the one deadline source
+                "repair_target_days": "INTEGER", "road_class": "TEXT", "road_name": "TEXT",
                 "pending_update": "INTEGER NOT NULL DEFAULT 0",
                 # independent repair verification, kept apart from the authority's status (status = 'fixed')
                 "closed_at": "TEXT", "verification_status": "TEXT", "verification_updated_at": "TEXT",

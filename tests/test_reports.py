@@ -6,10 +6,20 @@ from roadsense.core import geo, open311, reports
 
 
 def test_severity_rules():
-    assert reports.estimate_severity("D40", 0.03, 0.8, 5)["severity"] == "high"
-    assert reports.estimate_severity("D40", 0.005, 0.8, 5)["severity"] == "medium"
-    assert reports.estimate_severity("D40", 0.03, 0.2, 5)["severity"] == "medium"  # unsure → not high
-    assert reports.estimate_severity("D00", 0.01, 0.9, 5)["severity"] == "low"
+    sev = lambda *a, **k: (lambda s: (s["severity"], s["band"]))(reports.estimate_severity(*a, **k))  # noqa: E731
+    assert sev("D40", 0.03, 0.8, 5) == ("high", "S3")
+    assert sev("D40", 0.005, 0.8, 5) == ("low", "S1")
+    assert sev("D40", 0.03, 0.2, 5) == ("medium", "S2")  # unsure → capped, never "high" on a guess
+    assert sev("D00", 0.01, 0.9, 5) == ("medium", "S2")  # a line crack is capped at S2 by size, named medium
+    assert sev("D00", 0.005, 0.9, 5) == ("low", "S1")
+
+
+@pytest.mark.parametrize("args", [("D40", 0.025, 0.8, 5), ("D20", 0.07, 0.8, 5), ("D20", 0.04, 0.8, 5),
+                                  ("D00", 0.07, 0.8, 5), ("D40", 0.01, 0.8, 5, 0.30), ("D40", 0.01, 0.8, 5, 0.12),
+                                  ("D40", 0.02, 0.8, 5, None, 0.9), ("D40", 0.2, 0.1, 5, 0.6)])
+def test_the_level_is_always_the_name_of_the_band(args):
+    s = reports.estimate_severity(*args)
+    assert s["severity"] == reports.BAND_LEVEL[s["band"]]  # one scale: the words and the band never disagree
 
 
 def test_priority_grows_with_confirmations():

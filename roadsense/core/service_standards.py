@@ -287,6 +287,30 @@ def select_rule(conn: sqlite3.Connection, authority: str | None, class_code: str
     return best
 
 
+def target(conn: sqlite3.Connection, report: dict) -> dict | None:
+    """The repair and response target for a report: the frozen rule of its service clock once filed, otherwise the
+    rule that would apply if it were filed today. The only deadline source RoadSense shows or uses."""
+    clock = get_clock(conn, report["id"]) if report.get("id") else None
+    if clock and clock.get("rule_snapshot"):
+        rule, source = json.loads(clock["rule_snapshot"]), "filed"
+        usable = rule.get("verification") in USABLE or bool(clock.get("rule_verified_at"))
+        due = {"response_due": clock.get("response_due"), "completion_due": clock.get("completion_due")}
+    elif clock:
+        return {"source": "filed", "rule_id": None, "note": clock.get("note")}
+    else:
+        tz = config()["timezone"]
+        rule = select_rule(conn, canonical_authority(report.get("jurisdiction")), report.get("class_code"),
+                           report.get("severity_band"), report.get("road_class"),
+                           Calendar(tz).local_date(now()))
+        if not rule:
+            return None
+        source, usable, due = "applicable rule", rule["verification"] in USABLE, {}
+    return {"source": source, "rule_id": rule.get("id"), "authority": rule.get("authority"),
+            "response_days": rule.get("response_days"), "completion_days": rule.get("completion_days"),
+            "time_unit": rule.get("time_unit"), "verification": rule.get("verification"), "usable": usable,
+            "source_url": rule.get("source_url"), **due}
+
+
 # ---------------- the service clock ----------------
 def get_clock(conn: sqlite3.Connection, report_id: int) -> dict | None:
     return row(conn.execute("SELECT * FROM service_clocks WHERE report_id = ?", (report_id,)).fetchone())

@@ -72,8 +72,6 @@ def build_payload(report: dict) -> dict:
                   "source": "RoadSense"}
     if report.get("severity_band"):
         attributes["severity_band"] = report["severity_band"]
-    if report.get("repair_target_days"):
-        attributes["repair_target_days"] = report["repair_target_days"]
     return {"authority": info.get("authority", report.get("jurisdiction")), "channel": info.get("channel", "none"),
             "service_code": code, "lat": round(report["lat"], 6), "long": round(report["lon"], 6),
             "address_string": report.get("address") or "",

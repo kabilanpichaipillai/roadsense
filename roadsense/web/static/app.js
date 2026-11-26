@@ -587,6 +587,12 @@ async function renderReports(params) {
   if (q.value) apply();
 }
 
+/* The repair target comes only from the service-standard rules (frozen at filing, or the rule that would apply now) */
+const targetText = (t) => {
+  if (!t || t.completion_days == null) return `<a href="#/standards" class="muted small" title="${esc(t?.note || "No service standard applies")}">no standard</a>`;
+  const unit = t.time_unit === "calendar_days" ? "days" : "business days";
+  return `${Number(t.completion_days)} ${unit}${t.usable ? "" : ` <span class="pill amber" title="An administrator has not verified this rule's source: deadlines are provisional">unverified</span>`}`;
+};
 const flags = (r) => [
   r.class_disputed ? `<span class="pill amber">Class disputed</span>` : "",
   r.confirmations > 1 ? `<span class="pill blue">${icon("merge")}${r.confirmations} drivers</span>` : "",
@@ -633,7 +639,7 @@ function reportDetail(d) {
             <div class="fact"><div class="k">Position</div><div class="v">${e.position_uncertainty_m ? "± " + e.position_uncertainty_m + " m" : "car position"}</div></div>
             <div class="fact"><div class="k">Goes to</div><div class="v">${esc(authority(r.jurisdiction))}</div></div>
             <div class="fact"><div class="k">Severity band</div><div class="v">${r.severity_band ? `<span class="pill mono">${esc(r.severity_band)}</span>` : "–"}</div></div>
-            <div class="fact"><div class="k">Repair target</div><div class="v">${r.repair_target_days ? `${r.repair_target_days} days` : "–"}</div></div>
+            <div class="fact"><div class="k">Repair target</div><div class="v">${targetText(r.service_target)}</div></div>
             <div class="fact"><div class="k">Trend</div><div class="v">${trend.passes > 1 ? `${esc(trend.trend)} <span class="muted small">(${trend.passes} passes)</span>` : `<span class="muted">${trend.passes || 0} pass</span>`}</div></div>
             ${r.approved_by ? `<div class="fact"><div class="k">Approved by</div><div class="v small">${esc(r.approved_by)}</div></div>` : ""}
           </div>

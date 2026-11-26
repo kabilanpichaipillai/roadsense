@@ -5,16 +5,9 @@
     "provincial_route_range": [100, 199],
     "provincial_road_classes": ["motorway", "motorway_link"],
     "ambiguous_road_classes": ["trunk"],
-    "high_width_m": 0.25,
     "severity_bands": {
       "D40": [[0.10, "S1"], [0.25, "S2"], [0.50, "S3"], [99, "S4"]],
       "area": [[0.01, "S1"], [0.03, "S2"], [0.06, "S3"], [1, "S4"]]
-    },
-    "repair_target_days": {
-      "S4": {"motorway": 4, "primary": 4, "default": 7},
-      "S3": {"motorway": 7, "primary": 7, "default": 14},
-      "S2": {"default": 30},
-      "S1": {"default": 60}
     }
   },
   "Halifax Regional Municipality": {
