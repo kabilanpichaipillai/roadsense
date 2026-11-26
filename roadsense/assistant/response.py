@@ -21,7 +21,7 @@ KIND_NOTE = {
     "observed": "These are observed records (detections, statuses and dates as RoadSense stored them).",
     "calculated": "These are calculated metrics from RoadSense's own rules, not direct observations.",
     "predicted": "This is a forecast from a heuristic model, not an observation: it may not happen.",
-    "mixed": "This combines observed records with calculated RoadSense scores; the table labels which is which.",
+    "mixed": "This combines observed records with calculated RoadSense scores; calculated values are labelled.",
 }
 
 

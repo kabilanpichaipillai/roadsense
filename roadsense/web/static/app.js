@@ -67,6 +67,8 @@ const ICONS = {
   cloud: '<path d="M18 10h-1.3A8 8 0 109 20h9a5 5 0 000-10z"/>',
   risk: '<path d="M20 17.6A5 5 0 0018 8h-1.3A8 8 0 104 16.3"/><path d="M8 16l2 3M12 15l2 3M16 16l1.5 2.5"/>',
   zoom: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/>',
+  trash: '<path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6M10 11v6M14 11v6"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>',
   keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
 };
 const icon = (n, cls = "") => `<svg class="${cls}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[n] || ""}</svg>`;
@@ -188,7 +190,6 @@ const ROUTES = {
   reports: ["Reports", "Every defect, merged across drivers", renderReports],
   map: ["Map", "Reports on the road network", renderMap],
   conditions: ["Road condition", "Segment-level condition estimate from open defects (not a certified survey)", renderConditions],
-  assistant: ["Road Inspection Assistant", "Ask questions in plain language; every answer is built from RoadSense records and cites them", renderAssistant],
   activity: ["Agent activity", "Every plan, decision and tool call, from the append-only audit log", renderActivity],
   standards: ["Service standards", "Filed reports against each authority's published service standard, with a tamper-evident history", renderStandards],
   authorities: ["Authorities", "Requests delivered to Halifax 311 and Nova Scotia Public Works", renderAuthorities],
@@ -200,6 +201,8 @@ async function router() {
   const [path, qs] = location.hash.replace(/^#\/?/, "").split("?");
   if (riskModal.dlg?.open) riskModal.dlg.close();
   // Pothole Risk and Exposure Risk are workspaces over the Map, not pages: old links land on the Map with one open
+  // the assistant is a panel over every page, not a page: old links open it over the Overview
+  if (path === "assistant") { aiToggle(true); location.replace("#/overview"); return; }
   const ws = workspaceFor(path);
   if (ws) { riskModal.pending = { kind: ws, qs: qs || "" }; location.replace("#/map"); return; }
   const route = ROUTES[path] && (path !== "users" || can("admin")) ? path : "overview";
@@ -851,7 +854,7 @@ document.addEventListener("click", (e) => {
 
 /* ---------- keyboard shortcuts sheet (?) ---------- */
 const SHORTCUTS = [
-  ["Anywhere", [[["Ctrl", "K"], "Search, jump to a page or a report"], [["?"], "Show these shortcuts"], [["/"], "Filter the list on this page"], [["Esc"], "Close a dialog or the menu"]]],
+  ["Anywhere", [[["Ctrl", "K"], "Search, jump to a page or a report"], [["?"], "Show these shortcuts"], [["Ctrl", "I"], "Open or close the Road Inspection Assistant"], [["/"], "Filter the list on this page"], [["Esc"], "Close a dialog or the menu"]]],
   ["Review", [[["J"], "Next report"], [["K"], "Previous report"], [["Enter"], "Open the focused report"]]],
   ["Never on a key", [[[], "Approving and rejecting always need a click: they decide what reaches a road authority"]]],
 ];
@@ -1706,65 +1709,83 @@ function riskCard(k) {
     <div class="muted small" style="margin-top:8px">${esc(k.disclaimer)} OpenStreetMap: ${esc(k.osm_status)}${k.osm_fetched_at ? `, fetched ${esc(new Date(k.osm_fetched_at).toLocaleDateString())}` : ""}.</div></div>`;
 }
 
-/* ---------- Road Inspection Assistant (read-only) ----------
-   Everything the assistant shows comes from the API response and is escaped: answer text is composed from records,
-   the optional AI summary is checked against them server-side, and table cells are record values. */
+/* ---------- Road Inspection Assistant: a launcher on every page and a panel on the right (read-only) ----------
+   The panel lives outside #view, so it stays open while you move between pages: a report link in an answer opens the
+   report behind it. Everything shown comes from the API response and is escaped: the answer text is composed from
+   records, the optional AI summary is checked against them server-side, and result values are record values. */
 const KIND = { observed: ["Observed", "green"], calculated: ["Calculated", "blue"], predicted: ["Forecast", "violet"], mixed: ["Observed + calculated", "cyan"] };
 const kindPill = (k) => { const [t, c] = KIND[k] || []; return t ? `<span class="pill ${c}">${esc(t)}</span>` : ""; };
 const AS_DATES = new Set(["first_seen", "closed_at", "reopened_at", "submitted_at", "next_due", "acknowledged_at", "completed_at"]);
-const assistantState = { cid: null, busy: false };
+const AI_WIDE = matchMedia("(min-width: 1440px)");
+const AI_PHONE = matchMedia("(max-width: 760px)");
+const ai = { el: null, open: false, cid: null, busy: false, view: "chat", maps: [], caps: null, opener: null };
 
 function asCell(key, v, row) {
   if (key === "report_id" && v) return `<a href="#/reports?id=${Number(v)}" class="mono">#${Number(v)}</a>`;
-  if (key === "report_list") return (v || []).slice(0, 8).map((i) => `<a href="#/reports?id=${Number(i)}" class="mono">#${Number(i)}</a>`).join(" ") + ((v || []).length > 8 ? ` <span class="muted small">+${v.length - 8}</span>` : "");
+  if (key === "report_list") return (v || []).slice(0, 8).map((i) => `<a href="#/reports?id=${Number(i)}" class="mono">#${Number(i)}</a>`).join(" ") + ((v || []).length > 8 ? ` <span class="muted">+${v.length - 8}</span>` : "");
   if (v === null || v === undefined || v === "") return `<span class="muted">${key === "overall" || key.endsWith("cycles") ? "unknown" : "–"}</span>`;
-  if (key === "service_status") return slaPill(v) + (row.provisional ? ` <span class="muted small">provisional: ${esc(String(row.provisional).replace(/_/g, " "))}</span>` : "");
+  if (key === "service_status") return slaPill(v) + (row.provisional ? ` <span class="muted">provisional</span>` : "");
   if (key === "risk" && RISK_LEVELS[v]) return riskLevelPill(v);
-  if (key === "lifecycle" || key === "verification") return `<span class="pill">${esc(v)}</span>`;
   if (AS_DATES.has(key)) return `<span class="nowrap">${esc(new Date(v).toLocaleDateString())}</span>`;
   if (key === "days_left") return v < 0 ? `<span class="pill red">${-v} late</span>` : esc(v);
   if (typeof v === "number" && !Number.isInteger(v)) return `<span class="mono">${v.toFixed(2)}</span>`;
-  if (key === "class_name" && row.class_code) return `${esc(v)} <span class="faint small mono">${esc(row.class_code)}</span>`;
   return esc(v);
 }
 
-function asTable(t) {
-  const mark = (c) => (c.kind === "calculated" ? ` <span class="as-kind" title="Calculated by RoadSense">calc</span>` : c.kind === "predicted" ? ` <span class="as-kind pred" title="Forecast">forecast</span>` : "");
-  return `<div class="table-wrap"><table class="table compact"><thead><tr>${t.columns.map((c) => `<th>${esc(c.label)}${mark(c)}</th>`).join("")}</tr></thead>
-    <tbody>${t.rows.map((r) => `<tr>${t.columns.map((c) => `<td>${asCell(c.key, r[c.key], r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+/* A narrow panel cannot hold a wide table: each row becomes a result card. The first column that names a record
+   (report, road, segment, neighbourhood) is its title; the other columns are labelled facts. */
+const AS_TITLE_KEYS = ["report_id", "road", "neighbourhood", "lifecycle"];
+const AS_WIDE_KEYS = new Set(["why", "reason", "latest_reason", "results", "factors", "near", "report_list", "damage"]);
+function asResults(t, total) {
+  const titleKey = AS_TITLE_KEYS.find((k) => t.columns.some((c) => c.key === k)) || t.columns[0].key;
+  const skip = new Set([titleKey, "class_name", "rank", ...(titleKey === "report_id" ? ["road"] : [])]);
+  const shown = t.columns.filter((c) => !skip.has(c.key));
+  const named = (kind) => shown.filter((c) => c.kind === kind).map((c) => esc(c.label.toLowerCase()));
+  const legend = [named("calculated").length ? `calculated by RoadSense: ${named("calculated").join(", ")}` : "",
+    named("predicted").length ? `forecast: ${named("predicted").join(", ")}` : ""].filter(Boolean).join(" · ");
+  const card = (r, i) => {
+    const head = titleKey === "report_id"
+      ? `${asCell("report_id", r.report_id, r)} <b>${esc(r.class_name || "")}</b>${r.road ? `<span class="ai-where">${esc(r.road)}</span>` : ""}`
+      : `<b>${esc(r[titleKey] ?? "–")}</b>`;
+    const facts = shown.map((c) => `<div class="ai-fact${AS_WIDE_KEYS.has(c.key) ? " wide" : ""}"><span class="k">${esc(c.label)}</span><span class="v">${asCell(c.key, r[c.key], r)}</span></div>`).join("");
+    return `<li class="ai-result" ${i >= 5 ? "data-more hidden" : ""}>${r.rank ? `<span class="ai-rank">${Number(r.rank)}</span>` : ""}<div class="ai-result-body"><div class="ai-result-head">${head}</div><div class="ai-facts">${facts}</div></div></li>`;
+  };
+  const more = t.rows.length > 5 ? `<button type="button" class="ai-link" data-act="more">Show all ${t.rows.length}${total > t.rows.length ? ` of ${total}` : ""}</button>` : "";
+  return `${legend ? `<p class="ai-fine ai-legend">${icon("info")}<span>Values are as stored; ${legend}.</span></p>` : ""}<ol class="ai-results">${t.rows.map(card).join("")}</ol>${more}`;
 }
 
 function asEvidence(list) {
   if (!list.length) return "";
   const item = (e) => {
     const facts = [
-      e.report_id ? `<a href="#/reports?id=${Number(e.report_id)}"><b>Report #${Number(e.report_id)}</b></a>` : `<b>Segment ${esc(e.segment_id)}</b>`,
-      e.first_seen ? `first detected ${esc(new Date(e.first_seen).toLocaleString())}` : "",
-      e.period ? `forecast period ${esc(e.period)}` : "",
-      e.observations != null ? `${Number(e.observations)} observation(s)` : "",
+      e.report_id ? `<a href="#/reports?id=${Number(e.report_id)}"><b>#${Number(e.report_id)}</b></a>` : `<b>Segment</b>`,
+      e.first_seen ? `first seen ${esc(new Date(e.first_seen).toLocaleDateString())}` : "",
+      e.period ? esc(e.period) : "",
+      e.observations != null ? `${Number(e.observations)} obs.` : "",
       e.trips != null ? `${Number(e.trips)} trip(s)` : "", e.drivers != null ? `${Number(e.drivers)} driver(s)` : "",
-      e.checks != null ? `${Number(e.checks)} re-observation(s)` : "",
+      e.checks != null ? `${Number(e.checks)} re-check(s)` : "",
       e.lat != null ? `<span class="mono">${Number(e.lat).toFixed(5)}, ${Number(e.lon).toFixed(5)}</span>` : "",
-      (e.risk_factors || e.factors || []).length ? `factors: ${(e.risk_factors || e.factors).map((f) => esc(f.label)).join(", ")}` : "",
+      (e.risk_factors || e.factors || []).length ? `${(e.risk_factors || e.factors).map((f) => esc(f.label)).join(", ")}` : "",
     ].filter(Boolean).join(" · ");
-    const photo = e.photo_event_id ? `<img class="thumb" loading="lazy" src="/api/media/${encodeURIComponent(e.photo_event_id)}.jpg?crop=1" alt="Evidence photo for report ${Number(e.report_id)}">` : "";
-    const hist = (e.history || []).map((h) => `<li class="small">${esc(new Date(h.observed_at).toLocaleDateString())}: ${esc(String(h.result).replace(/_/g, " "))} — ${esc(h.reason)}</li>`).join("");
-    const passes = (e.passes || []).map((p) => `<li class="small">${esc(new Date(p.at).toLocaleDateString())}: ${Number(p.size).toPrecision(3)} ${esc(p.unit)}</li>`).join("");
-    return `<li>${photo}<div style="flex:1;min-width:0">${facts}${hist || passes ? `<ul class="as-sub">${hist}${passes}</ul>` : ""}</div></li>`;
+    const photo = e.photo_event_id ? `<img class="ai-thumb" loading="lazy" src="/api/media/${encodeURIComponent(e.photo_event_id)}.jpg?crop=1" alt="Evidence photo, report ${Number(e.report_id)}">` : "";
+    const hist = (e.history || []).map((h) => `<li>${esc(new Date(h.observed_at).toLocaleDateString())}: ${esc(String(h.result).replace(/_/g, " "))}, ${esc(h.reason)}</li>`).join("");
+    const passes = (e.passes || []).map((p) => `<li>${esc(new Date(p.at).toLocaleDateString())}: ${Number(p.size).toPrecision(3)} ${esc(p.unit)}</li>`).join("");
+    return `<li>${photo}<div>${facts}${hist || passes ? `<ul>${hist}${passes}</ul>` : ""}</div></li>`;
   };
-  return `<details class="as-evidence"><summary>Evidence for ${list.length} record${list.length === 1 ? "" : "s"}</summary><ul class="feed">${list.map(item).join("")}</ul></details>`;
+  return `<details class="ai-more"><summary>${icon("eye")}Evidence <span class="n">${list.length}</span></summary><ul class="ai-evidence">${list.map(item).join("")}</ul></details>`;
 }
 
 function asMap(host, points) {
-  const el = $(".as-map", host);
-  if (!el || !points.length) return;
+  const el = $(".ai-map", host);
+  if (!el || !points.length || !window.L) return;
   const sel = (k, label, fmt = (x) => x) => {
     const opts = [...new Set(points.map((p) => p[k]).filter(Boolean))].sort();
-    return opts.length > 1 ? `<label class="small muted">${label} <select class="input input-sm" data-k="${k}"><option value="">All</option>${opts.map((o) => `<option value="${esc(o)}">${esc(fmt(o))}</option>`).join("")}</select></label>` : "";
+    return opts.length > 1 ? `<label>${label}<select class="input input-sm" data-k="${k}"><option value="">All</option>${opts.map((o) => `<option value="${esc(o)}">${esc(fmt(o))}</option>`).join("")}</select></label>` : "";
   };
-  $(".as-map-filters", host).innerHTML = sel("class_code", "Damage", (x) => CLASS_LABELS[x] || x) + sel("band", "Severity") + sel("status", "Status", (x) => STATUS[x]?.[0] || x) + sel("risk", "Risk", (x) => RISK_LEVELS[x]?.[0] || x);
-  const m = baseMap(el, points.map((p) => [p.lat, p.lon]));
+  $(".ai-map-filters", host).innerHTML = sel("class_code", "Damage", (x) => CLASS_LABELS[x] || x) + sel("band", "Severity") + sel("status", "Status", (x) => STATUS[x]?.[0] || x) + sel("risk", "Risk", (x) => RISK_LEVELS[x]?.[0] || x);
+  const m = baseMap(el, points.map((p) => [p.lat, p.lon]), ai.maps);
   if (!m) return;
+  const outline = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() || "#0b0d10";
   const layer = L.layerGroup().addTo(m);
   const draw = () => {
     const f = Object.fromEntries($$("select[data-k]", host).filter((s) => s.value).map((s) => [s.dataset.k, s.value]));
@@ -1772,7 +1793,7 @@ function asMap(host, points) {
     for (const p of points.filter((p) => Object.entries(f).every(([k, v]) => p[k] === v))) {
       const c = RISK_LEVELS[p.risk]?.[3] || MAP_COLORS[p.status] || "#ffb547";
       const link = p.report_id ? `<br><a href="#/reports?id=${Number(p.report_id)}">Open report #${Number(p.report_id)}</a>` : "";
-      L.circleMarker([p.lat, p.lon], { radius: 8, color: "#0b0d10", weight: 2, fillColor: c, fillOpacity: .95 })
+      L.circleMarker([p.lat, p.lon], { radius: 8, color: outline, weight: 2, fillColor: c, fillOpacity: .95 })
         .bindPopup(`<b>${esc(p.label)}</b>${p.band ? `<br>Severity band ${esc(p.band)}` : ""}${link}`).addTo(layer);
     }
   };
@@ -1781,90 +1802,172 @@ function asMap(host, points) {
 }
 
 function asAnswer(d) {
-  const metrics = d.metrics.length ? `<div class="as-metrics">${d.metrics.map((m) => `<div class="as-metric"><div class="k">${esc(m.label)}${m.kind !== "observed" ? ` <span class="as-kind${m.kind === "predicted" ? " pred" : ""}">${m.kind === "predicted" ? "forecast" : "calc"}</span>` : ""}</div><div class="v">${esc(m.value)}</div>${m.note ? `<div class="muted small">${esc(m.note)}</div>` : ""}</div>`).join("")}</div>` : "";
-  const warn = d.warnings.length ? `<div class="callout amber">${icon("alert")}<div>${d.warnings.map((w) => `<div>${esc(w)}</div>`).join("")}</div></div>` : "";
-  const lim = d.limitations.length ? `<div class="callout blue">${icon("shield")}<div><b>Limitations</b>${d.limitations.map((w) => `<div class="small">${esc(w)}</div>`).join("")}</div></div>` : "";
-  const narrative = d.narrative ? `<div class="callout as-ai">${icon("sparkle")}<div><b>${esc(d.narrative.label)}</b> <span class="small muted">Checked against the records above; not an official finding.</span><div>${esc(d.narrative.text)}</div></div></div>` : "";
-  const points = d.map?.points || [];
-  return `<div class="as-meta">${kindPill(d.answer.kind)}${d.answer.insufficient ? `<span class="pill amber">Insufficient information</span>` : ""}<span class="pill" title="How the question was read">${icon(d.understanding === "llm" ? "sparkle" : "cpu")}${d.understanding === "llm" ? "Read by AI, validated" : "Read by rules"}</span>
-      <span class="small muted">Interpreted as: ${d.interpretation.map(esc).join(" · ")}</span></div>
-    <p class="as-text">${esc(d.answer.text)}</p>${narrative}${metrics}${warn}
-    ${d.table ? asTable(d.table) : ""}
-    ${points.length ? `<div class="as-map-wrap"><div class="toolbar as-map-filters"></div><div class="as-map map"></div><div class="muted small">The map shows exactly the records in the table.</div></div>` : ""}
-    ${asEvidence(d.evidence || [])}${lim}
-    <div class="as-foot small muted">Retrieved ${esc(new Date(d.retrieved_at).toLocaleString())} · Sources: ${d.sources.map(esc).join(", ") || "–"}${d.method ? `<br>Method: ${esc(d.method)}` : ""}</div>`;
+  const n = d.table?.rows.length || 0, points = d.map?.points || [];
+  const metrics = d.metrics.length ? `<div class="ai-metrics">${d.metrics.map((m) => `<div class="ai-metric"><span class="k">${esc(m.label)}${m.kind !== "observed" ? `<span class="ai-kind${m.kind === "predicted" ? " pred" : ""}">${m.kind === "predicted" ? "forecast" : "calc"}</span>` : ""}</span><span class="v">${esc(m.value)}</span>${m.note ? `<span class="note">${esc(m.note)}</span>` : ""}</div>`).join("")}</div>` : "";
+  const warn = d.warnings.length ? `<div class="ai-note warn">${icon("alert")}<div>${d.warnings.map((w) => `<p>${esc(w)}</p>`).join("")}</div></div>` : "";
+  const narrative = d.narrative ? `<div class="ai-note ai-interp">${icon("sparkle")}<div><p class="ai-note-title">AI interpretation <span>checked against the records; not an official finding</span></p><p>${esc(d.narrative.text)}</p></div></div>` : "";
+  const lim = d.limitations.length ? `<details class="ai-more"><summary>${icon("shield")}Limitations <span class="n">${d.limitations.length}</span></summary><ul class="ai-plain">${d.limitations.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></details>` : "";
+  const map = points.length ? `<details class="ai-more" data-map><summary>${icon("map")}Map <span class="n">${points.length}</span></summary><div class="ai-map-filters"></div><div class="ai-map map"></div><p class="ai-fine">The map shows exactly the records listed above.</p></details>` : "";
+  const how = d.understanding === "llm" ? "Read by AI, validated" : "Read by rules";
+  const tip = `${d.interpretation.join(" · ")}${d.method ? `\n\nMethod: ${d.method}` : ""}`;
+  return `<div class="ai-answer">
+    <div class="ai-tags">${kindPill(d.answer.kind)}${d.answer.insufficient ? `<span class="pill amber">Not enough data</span>` : ""}</div>
+    <p class="ai-text">${esc(d.answer.text)}</p>${narrative}${metrics}${warn}
+    ${n ? asResults(d.table, d.matched) : ""}
+    <div class="ai-extras">${map}${asEvidence(d.evidence || [])}${lim}</div>
+    <p class="ai-fine" title="${esc(tip)}">${icon(d.understanding === "llm" ? "sparkle" : "cpu")}<span>${how} · ${esc(d.interpretation.slice(0, 3).join(" · "))} · retrieved ${esc(new Date(d.retrieved_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}</span></p>
+  </div>`;
 }
 
 function asHistory(m) {
-  if (m.role === "user") return `<div class="as-msg as-user"><div class="as-bubble">${esc(m.content)}</div></div>`;
-  const refs = (m.result_ids || []).slice(0, 20).map((i) => `<a class="pill mono" href="#/reports?id=${Number(i)}">#${Number(i)}</a>`).join(" ");
-  return `<div class="as-msg as-bot"><div class="as-card"><p class="as-text">${esc(m.content)}</p>${refs ? `<div class="chip-row">${refs}</div>` : ""}
-    ${(m.warnings || []).length ? `<div class="callout amber">${icon("alert")}<div>${m.warnings.map((w) => `<div class="small">${esc(w)}</div>`).join("")}</div></div>` : ""}
-    <div class="as-foot small muted">Snapshot from ${esc(new Date(m.retrieved_at || m.created_at).toLocaleString())}. Records may have changed: ask again for current data.</div></div></div>`;
+  if (m.role === "user") return `<div class="ai-msg ai-me"><p>${esc(m.content)}</p></div>`;
+  const refs = (m.result_ids || []).slice(0, 12).map((i) => `<a class="pill mono" href="#/reports?id=${Number(i)}">#${Number(i)}</a>`).join(" ");
+  return `<div class="ai-msg ai-bot"><div class="ai-answer"><p class="ai-text">${esc(m.content)}</p>${refs ? `<div class="chip-row">${refs}</div>` : ""}
+    ${(m.warnings || []).length ? `<div class="ai-note warn">${icon("alert")}<div>${m.warnings.map((w) => `<p>${esc(w)}</p>`).join("")}</div></div>` : ""}
+    <p class="ai-fine">${icon("clock")}<span>Snapshot from ${esc(new Date(m.retrieved_at || m.created_at).toLocaleString())}. Ask again for current records.</span></p></div></div>`;
 }
 
-const asConvs = (convs) => convs.length ? convs.map((c) => `<li><a href="#/assistant?c=${esc(c.id)}" class="${c.id === assistantState.cid ? "on" : ""}"><span class="as-conv-title">${esc(c.title)}</span><span class="muted small">${Number(c.questions)} question${c.questions === 1 ? "" : "s"} · ${ago(c.updated_at)}</span></a></li>`).join("")
-  : `<li class="muted small" style="padding:12px 16px">No conversations yet.</li>`;
+/* ---- the panel ---- */
+function aiSave() { try { localStorage.setItem("rs-ai", JSON.stringify({ open: ai.open, cid: ai.cid })); } catch (e) {} }
+function aiRestore() { try { return JSON.parse(localStorage.getItem("rs-ai") || "{}"); } catch (e) { return {}; } }
 
-async function renderAssistant(params) {
-  const view = stage();
-  assistantState.cid = /^[a-f0-9]{16}$/.test(params.get("c") || "") ? params.get("c") : null;
-  const [caps, convs, conv] = await Promise.all([api("/api/assistant/capabilities"), api("/api/assistant/conversations").catch(() => []),
-    assistantState.cid ? api(`/api/assistant/conversations/${assistantState.cid}`).catch(() => null) : null]);
-  if (assistantState.cid && !conv) assistantState.cid = null;
-  const suggestions = caps.suggestions.length ? caps.suggestions.map((s) => `<button type="button" class="as-suggest" data-q="${esc(s.text)}">${icon("search")}${esc(s.text)}</button>`).join("")
-    : `<div class="muted small">No RoadSense records yet: suggestions appear once trips have been processed.</div>`;
-  const off = caps.unavailable.length ? `<div class="muted small" style="margin-top:10px">No data yet for: ${caps.unavailable.map((k) => esc(k.replace(/_/g, " "))).join(", ")}. Questions about these will say so instead of guessing.</div>` : "";
-  view.innerHTML = `<div class="as-layout">
-    <aside class="card as-side" aria-label="Your conversations"><div class="card-head"><h2>Your conversations</h2><span class="spacer"></span><a class="btn btn-sm" href="#/assistant">${icon("plus")}New</a></div>
-      <ul class="as-convs">${asConvs(convs)}</ul></aside>
-    <section class="card as-chat" aria-label="Road Inspection Assistant">
-      <div class="card-head"><h2>${esc(conv?.title || "New conversation")}</h2><span class="pill">${icon("lock")}Read-only</span><span class="spacer"></span>
-        <button type="button" class="btn btn-sm btn-ghost" id="as-clear" ${assistantState.cid ? "" : "disabled"}>${icon("x")}Clear conversation</button></div>
-      <div class="as-log" id="as-log" aria-live="polite">${conv ? conv.messages.map(asHistory).join("") : `<div class="as-empty"><b>Ask about road conditions, repairs, deadlines and risk.</b><div class="muted small">Answers come only from RoadSense records and say what they are based on. The assistant cannot change anything.</div><div class="as-suggestions">${suggestions}</div>${off}</div>`}</div>
-      <form class="as-form" id="as-form"><label class="sr-only" for="as-q">Your question</label>
-        <textarea id="as-q" class="input" rows="2" maxlength="500" placeholder="e.g. Which potholes near schools are overdue?" required></textarea>
-        <button class="btn btn-primary" id="as-send" type="submit">${icon("send")}Send</button></form>
-    </section></div>`;
-  const log = $("#as-log", view), form = $("#as-form", view), q = $("#as-q", view), send = $("#as-send", view);
-  log.scrollTop = log.scrollHeight;
-  const ask = async (text) => {
-    if (assistantState.busy || !text.trim()) return;
-    assistantState.busy = true; send.disabled = true; q.value = "";
-    $(".as-empty", log)?.remove();
-    log.insertAdjacentHTML("beforeend", `<div class="as-msg as-user"><div class="as-bubble">${esc(text)}</div></div><div class="as-msg as-bot" id="as-pending"><div class="as-card"><span class="muted">${icon("refresh", "spin")} Reading the question and retrieving RoadSense records…</span></div></div>`);
-    log.scrollTop = log.scrollHeight;
-    const pending = $("#as-pending", log);
+function aiMount() {
+  if (ai.el) return;
+  ai.el = $("#ai-panel");
+  const fab = $("#ai-fab");
+  fab.hidden = false;
+  document.body.classList.add("ai-on");
+  fab.onclick = () => aiToggle(true);
+  $("#ai-close").onclick = () => aiToggle(false);
+  $("#ai-new").onclick = () => { ai.cid = null; aiSave(); aiShow("chat"); $("#ai-q").focus(); };
+  $("#ai-history").onclick = () => aiShow(ai.view === "history" ? "chat" : "history");
+  const q = $("#ai-q");
+  const grow = () => { q.style.height = "auto"; q.style.height = Math.min(q.scrollHeight, 160) + "px"; $("#ai-send").disabled = !q.value.trim() || ai.busy; };
+  q.oninput = grow;
+  q.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); aiAsk(q.value); } };
+  $("#ai-form").onsubmit = (e) => { e.preventDefault(); aiAsk(q.value); };
+  ai.el.addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.target.closest("select")) { e.stopPropagation(); aiToggle(false); } });
+  ai.el.addEventListener("click", (e) => {
+    if (e.target.closest('a[href^="#/"]') && AI_PHONE.matches) aiToggle(false, false); // the phone sheet covers the page
+    const b = e.target.closest("[data-act]");
+    if (!b) return;
+    const act = b.dataset.act;
+    if (act === "more") { $$("[data-more]", b.parentElement).forEach((li) => li.hidden = false); b.remove(); }
+    else if (act === "ask") aiAsk(b.dataset.q);
+    else if (act === "open") { ai.cid = b.dataset.id; aiSave(); aiShow("chat"); }
+    else if (act === "delete") aiDelete(b.dataset.id);
+  });
+  // an answer's map is built when it is first opened: no tiles load for answers nobody maps
+  ai.el.addEventListener("toggle", (e) => {
+    const det = e.target;
+    if (det.matches?.("details[data-map]") && det.open && !det.dataset.drawn) { det.dataset.drawn = "1"; asMap(det, det._points || []); }
+  }, true);
+  AI_WIDE.addEventListener("change", aiLayout);
+  const saved = aiRestore();
+  ai.cid = /^[a-f0-9]{16}$/.test(saved.cid || "") ? saved.cid : null;
+  if (saved.open) aiToggle(true, false);
+}
+
+function aiLayout() {
+  document.body.classList.toggle("ai-docked", ai.open && AI_WIDE.matches);
+  // Leaflet maps on the page re-measure on a window resize; docking changes their width without one
+  setTimeout(() => window.dispatchEvent(new Event("resize")), 320);
+}
+
+function aiToggle(open, focus = true) {
+  if (!ai.el) return;
+  if (open === ai.open) { if (open && focus) $("#ai-q").focus(); return; }
+  ai.open = open;
+  if (open && focus) ai.opener = document.activeElement;
+  ai.el.hidden = !open;
+  $("#ai-fab").hidden = open;
+  $("#ai-fab").setAttribute("aria-expanded", open);
+  if (open) void ai.el.offsetWidth; // apply the closed state first, so the slide-in runs (rAF can stall in a background tab)
+  ai.el.classList.toggle("is-open", open);
+  aiLayout();
+  aiSave();
+  if (open) { aiShow(ai.view); if (focus) setTimeout(() => $("#ai-q").focus(), 60); }
+  else {
+    ai.maps.forEach((m) => m.remove()); ai.maps = [];
+    $$("details[data-map]", ai.el).forEach((d) => { d.open = false; delete d.dataset.drawn; });
+    if (focus) (ai.opener?.isConnected && ai.opener !== document.body ? ai.opener : $("#ai-fab")).focus();
+  }
+}
+
+async function aiShow(view) {
+  ai.view = view;
+  const log = $("#ai-log"), hist = $("#ai-convs");
+  $("#ai-history").setAttribute("aria-pressed", view === "history");
+  hist.hidden = view !== "history";
+  log.hidden = $("#ai-form").hidden = view === "history";
+  $("#ai-title").textContent = view === "history" ? "Your conversations" : "Road Inspection Assistant";
+  if (view === "history") {
+    hist.innerHTML = `<div class="ai-typing">${icon("refresh", "spin")}Loading…</div>`;
     try {
-      const d = await api("/api/assistant/chat", { method: "POST", body: JSON.stringify({ question: text, conversation_id: assistantState.cid }) });
-      if (!view.isConnected) return;
-      pending.removeAttribute("id");
-      pending.innerHTML = `<div class="as-card">${asAnswer(d)}</div>`;
-      asMap(pending, d.map?.points || []);
-      if (!assistantState.cid) {
-        assistantState.cid = d.conversation_id;
-        history.replaceState(null, "", `#/assistant?c=${d.conversation_id}`);
-        $("#as-clear", view).disabled = false;
-        $(".as-chat .card-head h2", view).textContent = d.question;
-      }
-      api("/api/assistant/conversations").then((list) => { const ul = $(".as-convs", view); if (ul) ul.innerHTML = asConvs(list); }).catch(() => {});
-    } catch (e) {
-      pending.removeAttribute("id");
-      pending.innerHTML = `<div class="as-card"><div class="callout red">${icon("alert")}<div><b>No answer</b><div class="small">${esc(e.message)}</div><div class="small">Nothing was changed. Try again in a moment.</div></div></div></div>`;
-    } finally {
-      assistantState.busy = false; send.disabled = false; q.focus();
-      pending.scrollIntoView({ block: "start", behavior: STILL.matches ? "auto" : "smooth" });
-    }
-  };
-  form.onsubmit = (e) => { e.preventDefault(); ask(q.value); };
-  q.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); ask(q.value); } };
-  $$(".as-suggest", view).forEach((b) => b.onclick = () => ask(b.dataset.q));
-  $("#as-clear", view).onclick = async () => {
-    if (!assistantState.cid || !confirm("Delete this conversation? Only your chat history is removed; no RoadSense record changes.")) return;
-    try { await api(`/api/assistant/conversations/${assistantState.cid}`, { method: "DELETE" }); toast("Conversation deleted"); location.hash = "#/assistant"; if (location.hash === "#/assistant") router(); }
-    catch (e) { toast(e.message, false); }
-  };
-  if (!conv) q.focus();
+      const list = await api("/api/assistant/conversations");
+      hist.innerHTML = list.length ? `<ul class="ai-convs">${list.map((c) => `<li class="${c.id === ai.cid ? "on" : ""}"><button type="button" class="ai-conv" data-act="open" data-id="${esc(c.id)}"><span class="t">${esc(c.title)}</span><span class="m">${Number(c.questions)} question${c.questions === 1 ? "" : "s"} · ${ago(c.updated_at)}</span></button><button type="button" class="btn btn-ghost icon-btn btn-sm" data-act="delete" data-id="${esc(c.id)}" aria-label="Delete “${esc(c.title)}”" title="Delete">${icon("trash")}</button></li>`).join("")}</ul>`
+        : `<div class="ai-empty"><p class="ai-empty-title">No conversations yet</p><p>Questions you ask are kept here, visible only to you.</p></div>`;
+    } catch (e) { hist.innerHTML = `<div class="ai-note err">${icon("alert")}<div><p>${esc(e.message)}</p></div></div>`; }
+    return;
+  }
+  ai.maps.forEach((m) => m.remove()); ai.maps = [];
+  if (!ai.cid) return aiWelcome();
+  log.innerHTML = `<div class="ai-typing">${icon("refresh", "spin")}Loading the conversation…</div>`;
+  try {
+    const conv = await api(`/api/assistant/conversations/${ai.cid}`);
+    log.innerHTML = conv.messages.map(asHistory).join("");
+    log.scrollTop = log.scrollHeight;
+  } catch (e) { ai.cid = null; aiSave(); aiWelcome(); }
+}
+
+async function aiWelcome() {
+  const log = $("#ai-log");
+  if (!ai.caps) { try { ai.caps = await api("/api/assistant/capabilities"); } catch (e) { ai.caps = { suggestions: [], unavailable: [] }; } }
+  const s = ai.caps.suggestions;
+  log.innerHTML = `<div class="ai-empty">
+      <span class="ai-empty-mark">${icon("sparkle")}</span>
+      <p class="ai-empty-title">Ask about your road network</p>
+      <p>Defects, repairs, deadlines, risk and the freeze-thaw forecast. Answers come from RoadSense records and cite them. Nothing is ever changed.</p>
+      ${s.length ? `<div class="ai-suggest" role="group" aria-label="Suggested questions">${s.slice(0, 5).map((x) => `<button type="button" data-act="ask" data-q="${esc(x.text)}"><span>${esc(x.text)}</span>${icon("arrow")}</button>`).join("")}</div>`
+        : `<p class="ai-fine">Suggestions appear once trips have been processed.</p>`}
+      ${ai.caps.unavailable.length ? `<p class="ai-fine">No data yet for ${ai.caps.unavailable.map((k) => esc(k.replace(/_/g, " "))).join(", ")}. Questions about these say so instead of guessing.</p>` : ""}
+    </div>`;
+}
+
+async function aiAsk(text) {
+  text = (text || "").trim();
+  if (ai.busy || !text) return;
+  if (ai.view !== "chat") await aiShow("chat");
+  const log = $("#ai-log"), q = $("#ai-q");
+  ai.busy = true; q.value = ""; q.style.height = "auto"; $("#ai-send").disabled = true;
+  $(".ai-empty", log)?.remove();
+  log.insertAdjacentHTML("beforeend", `<div class="ai-msg ai-me"><p>${esc(text)}</p></div><div class="ai-msg ai-bot" id="ai-pending"><div class="ai-typing" role="status"><span class="ai-dots" aria-hidden="true"><i></i><i></i><i></i></span>Reading the question and retrieving records…</div></div>`);
+  const pending = $("#ai-pending", log);
+  log.scrollTop = log.scrollHeight;
+  try {
+    const d = await api("/api/assistant/chat", { method: "POST", body: JSON.stringify({ question: text, conversation_id: ai.cid }) });
+    pending.innerHTML = asAnswer(d);
+    const det = $("details[data-map]", pending);
+    if (det) det._points = d.map.points;
+    if (ai.cid !== d.conversation_id) { ai.cid = d.conversation_id; aiSave(); }
+  } catch (e) {
+    pending.innerHTML = `<div class="ai-note err">${icon("alert")}<div><p><b>No answer.</b> ${esc(e.message)}</p><p>Nothing was changed. <button type="button" class="ai-link" data-act="ask" data-q="${esc(text)}">Try again</button></p></div></div>`;
+  } finally {
+    pending.removeAttribute("id");
+    ai.busy = false; $("#ai-send").disabled = !q.value.trim();
+    log.scrollTop = (pending.previousElementSibling || pending).offsetTop - 12;
+    if (ai.open && !AI_PHONE.matches) q.focus();
+  }
+}
+
+async function aiDelete(id) {
+  if (!confirm("Delete this conversation? Only your chat history is removed; no RoadSense record changes.")) return;
+  try {
+    await api(`/api/assistant/conversations/${id}`, { method: "DELETE" });
+    if (ai.cid === id) { ai.cid = null; aiSave(); }
+    toast("Conversation deleted");
+    aiShow("history");
+  } catch (e) { toast(e.message, false); }
 }
 
 /* ---------- Users (admin) ---------- */
@@ -2038,13 +2141,14 @@ const palette = {
   el: $("#palette"), q: $("#palette-q"), list: $("#palette-list"), pending: [], items: [], sel: 0, opener: null,
   commands() {
     const nav = [["overview", "grid"], ["trips", "video"], ["review", "inbox"], ["reports", "file"], ["map", "map"],
-      ["conditions", "activity"], ["assistant", "sparkle"], ["activity", "activity"], ["standards", "clock"], ["authorities", "building"], ["system", "shield"],
+      ["conditions", "activity"], ["activity", "activity"], ["standards", "clock"], ["authorities", "building"], ["system", "shield"],
       ...(can("admin") ? [["users", "user"]] : [])]
       .map(([r, ic]) => ({ group: "Go to", label: ROUTES[r][0], hint: ROUTES[r][1], icon: ic, run: () => (location.hash = `#/${r}`) }));
     const acts = [
       { group: "Actions", label: "New trip", hint: "Upload a dashcam video", icon: "plus", run: () => { location.hash = "#/trips"; setTimeout(() => $("#video")?.click(), 300); } },
       { group: "Actions", label: "Exposure risk", hint: "Opens over the Map", icon: "alert", run: () => (location.hash = "#/risk") },
       { group: "Actions", label: "Pothole risk", hint: "Opens over the Map", icon: "risk", run: () => (location.hash = "#/forecast") },
+      { group: "Actions", label: "Ask the assistant", hint: "Ctrl I", icon: "sparkle", run: () => aiToggle(true) },
       { group: "Actions", label: "Toggle theme", hint: "Light / dark", icon: "moon", run: toggleTheme },
       ...(session.authEnabled && session.user ? [{ group: "Actions", label: "Sign out", hint: session.user.email, icon: "lock", run: signOut }] : []),
       { group: "Actions", label: "Keyboard shortcuts", hint: "?", icon: "keyboard", run: openShortcuts },
@@ -2087,6 +2191,7 @@ palette.el.onclick = (e) => { if (e.target === palette.el) palette.close(); };
 $("#open-palette").onclick = () => palette.open();
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k" && !$("dialog[open]")) { e.preventDefault(); palette.el.hidden ? palette.open() : palette.close(); }
+  else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "i" && ai.el && !$("dialog[open]")) { e.preventDefault(); aiToggle(!ai.open); }
   else if (e.key === "Escape" && !$("#user-menu").hidden) setUserMenu(false, true);
   else if (e.key === "Escape" && $("#sidebar").classList.contains("open")) setDrawer(false);
 });
@@ -2136,6 +2241,7 @@ window.addEventListener("hashchange", () => { if (session.user) router(); });
   } catch (e) { main.innerHTML = errorState(e); return; }
   $("#sign-out").hidden = !session.authEnabled;
   if (location.hash.includes("new=1")) setTimeout(() => $("#video")?.click(), 300);
+  aiMount();
   router();
   setInterval(() => { if (session.user) refreshChrome(); }, 15000);
 })();

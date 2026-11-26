@@ -8,6 +8,24 @@ It is not a general chatbot. It answers only from the data RoadSense holds, it c
 records are not enough it says so: *"I could not find sufficient information in the available RoadSense records to
 answer this question reliably."*
 
+## Where it lives in the app
+
+The assistant is not a page. An **Ask RoadSense** button sits at the bottom right of every signed-in page, and
+**Ctrl/⌘ I** (or "Ask the assistant" in the command palette) does the same. It opens a panel on the right:
+
+- **From 1440 px wide** the panel docks and pushes the page over, so the page and the conversation sit side by side.
+  Narrower screens show it over the page, and phones show a full-screen sheet with a round launcher.
+- **It stays open while you move between pages.** A report link in an answer opens that report behind the panel. On
+  a phone the sheet closes first, so you see the report.
+- **Header:** your conversations (a history view inside the panel, with delete), new conversation, and close
+  (Esc returns focus to where you were).
+- **Answers:** the answer text, then the key figures, warnings, and one result card per record. On cards the first
+  field names the record and the others are labelled; a line above the cards names the calculated and forecast fields.
+  Map, Evidence and Limitations are collapsible sections; the map is built only when opened, from exactly the
+  records in the answer, with damage, severity, status and risk filters.
+- The open state and current conversation are remembered in the browser, so a reload brings the panel back.
+  Old `#/assistant` links open the panel over the Overview.
+
 ## What you can ask
 
 | Category | Example | Answered from |
@@ -30,8 +48,8 @@ Follow-ups work within a conversation: "Show only those near schools", "Which of
 "The first three", "Their repair history". A follow-up narrows the **ids** of the previous answer and re-reads them
 from the database, so it never reuses stale rows.
 
-Suggested questions on the page appear only for capabilities that have data. On a fresh install with no filed
-reports, the page does not suggest service-standard questions, and if you ask one anyway it says no report has been
+Suggested questions in the panel appear only for capabilities that have data. On a fresh install with no filed
+reports, the panel does not suggest service-standard questions, and if you ask one anyway it says no report has been
 filed yet.
 
 ### What it will not do
@@ -81,8 +99,8 @@ The code is in `roadsense/assistant/`:
 
 ### Observed, calculated, predicted
 
-Every answer carries a `kind`, and the page labels it. Table columns and metrics are tagged **calc** (a RoadSense
-calculation) or **forecast**:
+Every answer carries a `kind`, and the panel labels it. Metrics are tagged **calc** (a RoadSense calculation) or
+**forecast**, and a line above the result cards names the calculated and forecast fields:
 
 - **Observed**: detections, dates, statuses, verification results as stored.
 - **Calculated**: severity band, risk scores, condition index, service-standard status, trends.

@@ -176,8 +176,8 @@ def parse_rules(question: str, previous: dict | None = None, today: date | None 
 
     classes = [code for pat, code in CLASS_WORDS if re.search(pat, q)]
     classes += [f"D{c}" for c in re.findall(r"\bd(00|10|20|40)\b", q)]
-    if not classes and re.search(r"\bcracks?\b|\bcracking\b", q):
-        classes = ["D00", "D10", "D20"]
+    if not set(classes) & {"D00", "D10", "D20"} and re.search(r"\bcracks?\b|\bcracking\b", q):
+        classes += ["D00", "D10", "D20"]  # "potholes and cracks": a generic crack word adds every crack class
     if classes:
         spec["classes"] = list(dict.fromkeys(classes))
 
