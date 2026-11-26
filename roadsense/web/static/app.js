@@ -308,8 +308,7 @@ async function renderOverview() {
        <div class="ov-actions"><a class="btn btn-primary btn-lg" href="#/review">${icon("inbox")}Start reviewing</a><a class="btn btn-lg" href="#/map">${icon("map")}See them on the map</a></div>`
     : `<div class="ov-num is-clear" aria-hidden="true">0</div>
        <h2 class="ov-lead">The review queue is clear</h2>
-       <p class="ov-sub">Upload a dashcam drive and the agents will bring you the next batch.</p>
-       <div class="ov-actions"><a class="btn btn-primary btn-lg" href="#/trips?new=1">${icon("upload")}Upload a trip</a></div>`;
+       <p class="ov-sub">Upload a dashcam drive and the agents will bring you the next batch.</p>`;
 
   // 2. The pipeline as a road: four stops, and what fell away between them painted on the asphalt
   const stop = (n, t, note, tone = "") => `<li class="ov-stop ${tone}"><span class="ov-pin"></span><div class="t">${t}</div><div class="n">${num(n)}</div>${note ? `<div class="note">${note}</div>` : ""}</li>`;
