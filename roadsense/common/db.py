@@ -483,6 +483,9 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     conn.executescript(POST_MIGRATION)
     conn.execute("CREATE INDEX IF NOT EXISTS reports_verification ON reports (status, verification_status)")
     conn.execute("CREATE INDEX IF NOT EXISTS reports_inspector ON reports (inspector_id, status)")
+    from ..core import workflow  # late import: workflow imports this module
+
+    workflow.migrate(conn)  # statuses from before the municipal workflow; idempotent
     return conn
 
 

@@ -17,7 +17,7 @@ from roadsense.assistant import context, response, retrieval, service, store, un
 from roadsense.assistant.spec import NOT_ENOUGH, READ_ONLY_REFUSAL, QuerySpec
 from roadsense.common.config import settings
 from roadsense.common.db import session
-from roadsense.core import exposure, reports
+from roadsense.core import exposure, reports, workflow
 from roadsense.core import service_standards as ss
 from roadsense.services import agent_api
 
@@ -90,9 +90,10 @@ def filed(rep, days_ago=40):
         for rule in ss.list_rules(conn):
             if rule["authority"] == HRM:
                 ss.update_rule(conn, rule["id"], {"verification": "approved"}, "admin@roadsense.test")
-        r = reports.set_status(conn, rep["id"], "submitted", "test", service_request_id=str(rep["id"]),
-                               channel="open311")
         at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat(timespec="seconds")
+        workflow.transition(conn, rep["id"], "approve", "reviewer@roadsense.test", "reviewer", at=at)
+        r = workflow.transition(conn, rep["id"], "refer", "mcp:municipality", "system", at=at,
+                                service_request_id=str(rep["id"]), channel="open311")
         return ss.start_clock(conn, r, "mcp:municipality", submitted_at=at)
 
 

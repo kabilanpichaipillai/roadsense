@@ -45,6 +45,7 @@ from ..core import (
     repair,
     reports,
     service_standards,
+    workflow,
 )
 from .jobs import Worker
 
@@ -88,12 +89,17 @@ AUTH = [Depends(require_token)]
 
 
 class Actor:
-    def __init__(self, user: str | None, role: str | None):
-        self.user, self.role = user, role
+    def __init__(self, user: str | None, role: str | None, user_id: int | None = None):
+        self.user, self.role, self.user_id = user, role, user_id
 
     @property
     def name(self) -> str:
         return self.user or "service"
+
+    @property
+    def workflow_role(self) -> str | None:
+        """The role the workflow checks: the person's, or admin for a trusted service call (scripts, the demo)."""
+        return self.role if self.user is not None else "admin"
 
     def need(self, roles: tuple[str, ...]) -> None:
         # a request without a user is a trusted service call (edge device, scripts); a person must hold the role
@@ -101,8 +107,27 @@ class Actor:
             raise HTTPException(403, f"needs one of the roles: {', '.join(roles)}")
 
 
-def actor(x_roadsense_user: str | None = Header(None), x_roadsense_role: str | None = Header(None)) -> Actor:
-    return Actor((x_roadsense_user or "")[:120] or None, (x_roadsense_role or "")[:20] or None)
+def actor(x_roadsense_user: str | None = Header(None), x_roadsense_role: str | None = Header(None),
+          x_roadsense_user_id: str | None = Header(None)) -> Actor:
+    try:
+        uid = int(x_roadsense_user_id) if x_roadsense_user_id else None
+    except ValueError:
+        uid = None
+    return Actor((x_roadsense_user or "")[:120] or None, (x_roadsense_role or "")[:20] or None, uid)
+
+
+def move(conn, report_id: int, action: str, who: Actor, **fields) -> dict:
+    """One workflow step for the signed-in person; the report comes back with what they may do next."""
+    try:
+        r = workflow.transition(conn, report_id, action, who.name, who.workflow_role, user_id=who.user_id, **fields)
+    except workflow.WorkflowError as e:
+        raise HTTPException(e.status, e.message) from e
+    return public_report(r, who)
+
+
+def public_report(r: dict, who: Actor) -> dict:
+    out = {k: v for k, v in r.items() if k not in ("approved_payload", "repair_target_days")}
+    return workflow.decorate(out, who.workflow_role, who.user_id)
 
 
 @app.get("/health")
@@ -293,8 +318,11 @@ def stats():
             "multi_driver_reports": one("SELECT COUNT(*) FROM reports WHERE confirmations > 1"),
             "class_disputed": one("SELECT COUNT(*) FROM reports WHERE class_disputed = 1"),
             "known_to_city": one("SELECT COUNT(*) FROM reports WHERE external_ref IS NOT NULL"),
-            "delivery_failed": one("SELECT COUNT(*) FROM reports WHERE status = 'delivery_failed' OR "
-                                   "(status = 'approved' AND delivery_attempts > 0)"),
+            "delivery_failed": one("SELECT COUNT(*) FROM reports WHERE status = 'awaiting_inspection' AND "
+                                   "delivery_attempts > 0"),
+            "overdue": sum(workflow.overdue(dict(r)) for r in conn.execute(
+                "SELECT status, repair_eta FROM reports WHERE status IN ('repair_needed', 'reopened')")),
+            "reopens": one("SELECT COALESCE(SUM(reopen_count), 0) FROM reports"),
             "trips": len(trips),
             "llm_calls": sum((t.get("llm") or {}).get("calls", 0) for t in trips),
             "llm_tokens": sum((t.get("llm") or {}).get("prompt_tokens", 0) + (t.get("llm") or {}).get(
@@ -323,7 +351,7 @@ def list_trips():
 
 
 @app.get("/reports/{report_id}", dependencies=AUTH)
-def report_detail(report_id: int):
+def report_detail(report_id: int, who: Actor = Depends(actor)):
     """A report with its sightings, the agents' decision trail, deliveries, city matches and the payload."""
     with session() as conn:
         r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
@@ -343,9 +371,7 @@ def report_detail(report_id: int):
         verification = repair.summary(conn, r)
         risk = exposure.detail(conn, report_id)
         target = service_standards.target(conn, r)
-    r.pop("approved_payload", None)
-    r.pop("repair_target_days", None)  # superseded by the service-standard target (one deadline source)
-    r["lifecycle"] = repair.lifecycle(r)
+    r = public_report(r, who)  # the service-standard target below is the one deadline source
     r["service_target"] = target
     p = open311.build_payload(r)
     return {"report": r, "events": events, "trail": trail, "payload": p, "payload_hash": open311.payload_hash(p),
@@ -354,30 +380,31 @@ def report_detail(report_id: int):
 
 
 @app.get("/trips/{trip_id}/reports", dependencies=AUTH)
-def trip_reports(trip_id: str):
+def trip_reports(trip_id: str, who: Actor = Depends(actor)):
     with session() as conn:
         rows = conn.execute("SELECT DISTINCT r.* FROM reports r JOIN events e ON e.report_id = r.id "
                             "WHERE e.trip_id = ? ORDER BY r.priority DESC", (trip_id,)).fetchall()
-    return [{k: v for k, v in dict(r).items() if k != "approved_payload"} for r in rows]
+    return [public_report(dict(r), who) for r in rows]
 
 
 @app.get("/reports", dependencies=AUTH)
-def list_reports(status: str | None = None):
+def list_reports(status: str | None = None, inspector_id: str | None = None, overdue: bool = False,
+                 who: Actor = Depends(actor)):
+    """Reports by priority. inspector_id=me lists the caller's own inspections; overdue=true only reports whose
+    repair date has passed."""
     if status and status not in REPORT_STATUSES:
         raise HTTPException(400, f"status must be one of {REPORT_STATUSES}")
+    sql, args = "SELECT * FROM reports WHERE 1=1", []
+    if status:
+        sql, args = sql + " AND status = ?", [*args, status]
+    if inspector_id:
+        uid = who.user_id if inspector_id == "me" else inspector_id
+        if not str(uid if uid is not None else "").isdigit():
+            raise HTTPException(400, "inspector_id must be a user id or 'me'")
+        sql, args = sql + " AND inspector_id = ?", [*args, int(uid)]
     with session() as conn:
-        sql = "SELECT * FROM reports" + (" WHERE status = ?" if status else "") + " ORDER BY priority DESC"
-        return [{**{k: v for k, v in dict(r).items() if k != "approved_payload"}, "lifecycle": repair.lifecycle(dict(r))}
-                for r in conn.execute(sql, (status,) if status else ())]
-
-
-def _pending(conn, report_id: int) -> dict:
-    r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
-    if r is None:
-        raise HTTPException(404, "unknown report")
-    if r["status"] != "pending_approval":
-        raise HTTPException(409, f"report is {r['status']}")
-    return r
+        rows = [public_report(dict(r), who) for r in conn.execute(sql + " ORDER BY priority DESC", args)]
+    return [r for r in rows if r["overdue"]] if overdue else rows
 
 
 @app.get("/reports/{report_id}/payload", dependencies=AUTH)
@@ -392,31 +419,23 @@ def payload(report_id: int):
 
 
 @app.post("/reports/{report_id}/approve", dependencies=AUTH)
-async def approve(report_id: int, payload_hash: str = Body(..., embed=True), wait: bool = True,
-                  who: Actor = Depends(actor)):
-    """The reviewer approves the payload they were shown; it is rejected if it changed in between. The approved
-    payload is stored and is exactly what delivery sends."""
-    who.need(REVIEW_ROLES)
+async def approve(report_id: int, payload_hash: str = Body(..., embed=True), who: Actor = Depends(actor)):
+    """The reviewer approves the report they were shown (refused if it changed in between): it moves to Awaiting
+    inspection. The approved payload is stored as a snapshot."""
     with session() as conn:
-        r = _pending(conn, report_id)
-        p = open311.build_payload(r)
-        current = open311.payload_hash(p)
-        if not secrets.compare_digest(current, payload_hash):
+        r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
+        if r is None:
+            raise HTTPException(404, "unknown report")
+        if r["status"] == "pending_approval" and not secrets.compare_digest(
+                open311.payload_hash(open311.build_payload(r)), payload_hash):
             raise HTTPException(409, "the report changed since you reviewed it; reload and review again")
-        reports.set_status(conn, report_id, "approved", who.name, approved_payload_hash=current,
-                           approved_payload=json.dumps(p, sort_keys=True), approved_by=who.name, approved_at=now())
-        reports.record_label(conn, report_id, "approved", who.name, r["class_code"])
-    job_id = worker.submit("file_report", actor=who.name, report_id=report_id)
-    return await worker.wait(job_id, 300) if wait else worker.get(job_id)
+        return move(conn, report_id, "approve", who)
 
 
 @app.post("/reports/{report_id}/reject", dependencies=AUTH)
-def reject(report_id: int, who: Actor = Depends(actor)):
-    who.need(REVIEW_ROLES)
+def reject(report_id: int, body: dict | None = Body(None), who: Actor = Depends(actor)):
     with session() as conn:
-        _pending(conn, report_id)
-        reports.record_label(conn, report_id, "rejected", who.name)
-        return reports.set_status(conn, report_id, "rejected", who.name, rejected_by=who.name)
+        return move(conn, report_id, "reject", who, reason=(body or {}).get("reason"))
 
 
 @app.post("/reports/{report_id}/class", dependencies=AUTH)
@@ -432,16 +451,15 @@ def reclassify(report_id: int, class_code: str = Body(..., embed=True), who: Act
 
 @app.post("/reports/{report_id}/resend", dependencies=AUTH)
 async def resend(report_id: int, wait: bool = True, who: Actor = Depends(actor)):
-    """Retry delivery of an approved report now (after a failure, or once the authority's system is back)."""
+    """Retry a referral to another road authority now (after a failure, or once its system is back)."""
     who.need(REVIEW_ROLES)
     with session() as conn:
         r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
         if r is None:
             raise HTTPException(404, "unknown report")
-        if r["status"] not in ("approved", "delivery_failed"):
-            raise HTTPException(409, f"report is {r['status']}; only approved reports can be (re)sent")
-        reports.set_status(conn, report_id, "approved", who.name, next_attempt_at=None,
-                           delivery_attempts=0 if r["status"] == "delivery_failed" else r["delivery_attempts"])
+        if r["status"] != "awaiting_inspection" or not r["approved_payload_hash"]:
+            raise HTTPException(409, f"report is {workflow.label(r).lower()}; only approved reports can be referred")
+        conn.execute("UPDATE reports SET next_attempt_at = NULL, delivery_attempts = 0 WHERE id = ?", (report_id,))
     job_id = worker.submit("file_report", actor=who.name, report_id=report_id)
     return await worker.wait(job_id, 300) if wait else worker.get(job_id)
 
@@ -685,17 +703,13 @@ def standards_record(report_id: int, body: dict = Body(...), who: Actor = Depend
     with session() as conn:
         clock = service_standards.get_clock(conn, report_id)
         if clock is None:
-            raise HTTPException(409, "the report has not been filed with an authority yet")
+            raise HTTPException(409, "the report has no service clock yet (it starts when the report is approved)")
         if at and service_standards.parse_ts(at) < service_standards.parse_ts(clock["submitted_at"]):
             raise HTTPException(422, "an event cannot be before the report was submitted")
+        # the clock only: the report's own status moves through the workflow actions (core.workflow)
         entry = service_standards.record_event(conn, report_id, event, who.name, "manual", at=at, note=note)
         if entry is None:
             raise HTTPException(409, "the report is already at or past that step")
-        r = row(conn.execute("SELECT status FROM reports WHERE id = ?", (report_id,)).fetchone())
-        if event in ("repair_completed", "report_closed") and r["status"] == "submitted":
-            reports.set_status(conn, report_id, "fixed", who.name)
-        elif event == "report_reopened" and r["status"] == "fixed":
-            reports.set_status(conn, report_id, "submitted", who.name)
     return entry
 
 

@@ -134,7 +134,7 @@ def score(scenarios: list[dict], runs: list[dict]) -> dict:
     dup_applicable = sum(1 for s in dups if events[s["of"]]["status"] == "processed")
     ambiguous = [reports[events[s["id"]]["report_id"]]["jurisdiction"] for s in reported
                  if s["kind"] == "numbered_route"]
-    sent_during_trip = [a for a in audit if a["action"] in ("tool:city_submit_request", "status_submitted")]
+    sent_during_trip = [a for a in audit if a["action"] in ("tool:city_submit_request", "ledger_workflow_refer")]
     off_list = [a for a in audit if "is not available to" in (a["detail"] or "")]
     return {
         "scenarios": len(scenarios), "real_damage": sum(s["real"] for s in singles),

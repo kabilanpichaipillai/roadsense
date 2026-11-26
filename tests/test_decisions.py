@@ -7,7 +7,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from roadsense.agents.contracts import VisionResult, validate
 from roadsense.common.db import audit, session
-from roadsense.core import geo, open311, reports
+from roadsense.core import geo, open311, reports, workflow
 from roadsense.edge.camera import Camera, offset_position
 from roadsense.edge.gps import haversine_m
 from roadsense.mcp_servers import municipality_server, reports_server
@@ -81,8 +81,7 @@ def approved_report(event_id="ev-p"):
     with session() as conn:
         r = reports.create_or_merge(conn, event_id, "high", "x", "Halifax Regional Municipality", 15,
                                     jurisdiction="Halifax Regional Municipality")["report"]
-        digest = open311.payload_hash(open311.build_payload(r))
-        reports.set_status(conn, r["id"], "approved", "driver", approved_payload_hash=digest)
+        workflow.transition(conn, r["id"], "approve", "reviewer@roadsense.test", "reviewer")
     return r["id"]
 
 
@@ -96,9 +95,9 @@ def test_unapproved_reports_cannot_be_sent(db):
 
 def test_payload_is_locked_after_approval(db):
     rid = approved_report()
-    with session() as conn:  # something changes the description after the driver approved
-        conn.execute("UPDATE reports SET draft_description = 'different text that was never approved' WHERE id = ?",
-                     (rid,))
+    with session() as conn:  # something rewrites the approved snapshot in the database after the reviewer approved
+        conn.execute("UPDATE reports SET approved_payload = replace(approved_payload, '\"high\"', '\"low\"') "
+                     "WHERE id = ?", (rid,))
     with pytest.raises(ToolError, match="changed after the reviewer approved"):
         municipality_server.submit_request(rid)
 

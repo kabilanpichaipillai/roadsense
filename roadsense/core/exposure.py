@@ -445,7 +445,8 @@ def compute(conn: sqlite3.Connection, report: dict, client: httpx.Client | None 
 def pending(conn: sqlite3.Connection, limit: int | None = None) -> list[dict]:
     """Reports without a current score: never scored, changed since, or scored with other rules."""
     rhash = rules_hash()
-    sql = ("SELECT r.* FROM reports r LEFT JOIN report_risk k ON k.report_id = r.id WHERE r.status != 'rejected' AND "
+    sql = ("SELECT r.* FROM reports r LEFT JOIN report_risk k ON k.report_id = r.id WHERE NOT (r.status = 'closed' AND "
+           "r.closed_reason IS 'rejected') AND "
            "(k.report_id IS NULL OR k.rules_hash != ? OR r.updated_at > k.computed_at OR k.osm_status IN "
            "('unavailable', 'stale')) ORDER BY (k.report_id IS NOT NULL), r.priority DESC, r.id")
     rows = [dict(x) for x in conn.execute(sql + (f" LIMIT {int(limit)}" if limit else ""), (rhash,))]
@@ -485,7 +486,8 @@ def listing(conn: sqlite3.Connection, category: str | None = None, damage: str |
     rows = [dict(x) for x in conn.execute(
         "SELECT k.*, r.class_code, r.class_name, r.status, r.address, r.lat, r.lon, r.road_name, r.road_class, "
         "r.severity, r.severity_band, r.width_m, r.confirmations, r.jurisdiction, r.verification_status "
-        "FROM report_risk k JOIN reports r ON r.id = k.report_id WHERE r.status != 'rejected' "
+        "FROM report_risk k JOIN reports r ON r.id = k.report_id "
+        "WHERE NOT (r.status = 'closed' AND r.closed_reason IS 'rejected') "
         "ORDER BY k.overall_score DESC")]
     feats: dict[int, set] = {}
     for f in conn.execute("SELECT report_id, category FROM exposure_features"):
@@ -509,7 +511,8 @@ def listing(conn: sqlite3.Connection, category: str | None = None, damage: str |
     if infrastructure:
         rows = [x for x in rows if infrastructure in x["infrastructure"]]
     near = lambda cat: sum(cat in x["infrastructure"] for x in all_rows)
-    total = conn.execute("SELECT COUNT(*) FROM reports WHERE status != 'rejected'").fetchone()[0]
+    total = conn.execute("SELECT COUNT(*) FROM reports WHERE NOT (status = 'closed' AND "
+                         "closed_reason IS 'rejected')").fetchone()[0]
     summary = {"defects": total, "scored": len(all_rows), **{c: sum(x["category"] == c for x in all_rows)
                                                               for c in CATEGORIES},
                "near_cycling": near("cycling"), "near_crossing": near("crossing"), "near_school": near("school"),

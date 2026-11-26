@@ -99,6 +99,7 @@ REPORT_SQL = """
 SELECT r.id, r.trip_id, r.class_code, r.class_name, r.lat, r.lon, r.address, r.municipality, r.jurisdiction,
        r.road_name, r.road_class, r.severity, r.severity_band, r.priority, r.confirmations, r.status,
        r.verification_status, r.closed_at, r.reopened_at, r.reopen_reason, r.best_event_id, r.created_at, r.width_m,
+       r.closed_reason, r.repair_eta, r.reopen_count, r.inspector_id,
        (SELECT MIN(e.captured_at) FROM events e WHERE e.report_id = r.id) AS first_seen,
        (SELECT MAX(e.captured_at) FROM events e WHERE e.report_id = r.id) AS last_seen,
        (SELECT COUNT(*) FROM events e WHERE e.report_id = r.id AND e.suppressed_by IS NULL) AS observations,
@@ -148,7 +149,7 @@ def filter_reports(rows: list[dict], spec: QuerySpec, res: Result, exclude_rejec
     if spec.statuses:
         rows = [x for x in rows if x["status"] in spec.statuses]
     elif exclude_rejected:
-        rows = [x for x in rows if x["status"] != "rejected"]
+        rows = [x for x in rows if not (x["status"] == "closed" and x.get("closed_reason") == "rejected")]
     if spec.classes:
         rows = [x for x in rows if x["class_code"] in spec.classes]
     if spec.bands:
@@ -364,13 +365,13 @@ def repair_verification(m: Memo, spec: QuerySpec, scope: list[int] | None) -> Re
     res = Result("repair_verification", "Independent repair verification", "observed",
                  sources=["reports", "repair_verifications"],
                  columns=[col("report_id", "Report"), col("class_name", "Damage"), col("road", "Location"),
-                          col("closed_at", "Closed by authority"), col("verification", "Verification"),
+                          col("closed_at", "Marked repaired"), col("verification", "Verification"),
                           col("latest_result", "Latest check"), col("latest_reason", "Why"),
                           col("reopened_at", "Reopened")])
     met = repair.metrics(m.conn)
-    if not met["closed_by_authority"]:
+    if not met["marked_repaired"]:
         res.available = False
-        res.limitations.append("No report has been closed by a road authority yet, so there are no repairs to verify.")
+        res.limitations.append("No report has been marked repaired yet, so there are no repairs to verify.")
         return res
     rows = [x for x in load_reports(m.conn, scope) if x.get("verification_status")]
     rows = filter_reports(rows, spec, res, exclude_rejected=False, date_field="closed_at")
@@ -387,7 +388,7 @@ def repair_verification(m: Memo, spec: QuerySpec, scope: list[int] | None) -> Re
         r["evidence"]["latest_check_at"] = last["observed_at"] if last else None
         out.append(r)
     rate = met["verification_rate"]
-    res.metrics = [metric("Closed by the authority", met["closed_by_authority"]),
+    res.metrics = [metric("Marked repaired", met["marked_repaired"]),
                    metric("Verified", met["verified"]), metric("Reopened (repair not verified)", met["reopened"]),
                    metric("Awaiting verification", met["awaiting_verification"]),
                    metric("Not yet re-observed", met["not_yet_reobserved"]),
@@ -404,7 +405,7 @@ def repair_history(m: Memo, spec: QuerySpec, scope: list[int] | None) -> Result:
     res = Result("repair_history", "Repair history", "observed", sources=["reports", "repair_verifications",
                                                                           "service_clocks"],
                  columns=[col("report_id", "Report"), col("class_name", "Damage"), col("road", "Location"),
-                          col("closed_at", "Closed by authority"), col("verification", "Verification"),
+                          col("closed_at", "Marked repaired"), col("verification", "Verification"),
                           col("checks", "Re-observations"), col("results", "Results"),
                           col("authority_reopened", "Reopened by authority")])
     if scope is None:
@@ -891,7 +892,7 @@ def retrieve(conn: sqlite3.Connection, spec: QuerySpec, previous: dict | None = 
 # ---------------- capabilities: what the data can answer right now ----------------
 def capabilities(conn: sqlite3.Connection) -> dict:
     one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
-    reports = one("SELECT COUNT(*) FROM reports WHERE status != 'rejected'")
+    reports = one("SELECT COUNT(*) FROM reports WHERE NOT (status = 'closed' AND closed_reason IS 'rejected')")
     closed = one("SELECT COUNT(*) FROM reports WHERE verification_status IS NOT NULL")
     clocks = one("SELECT COUNT(*) FROM service_clocks")
     scored = one("SELECT COUNT(*) FROM report_risk")

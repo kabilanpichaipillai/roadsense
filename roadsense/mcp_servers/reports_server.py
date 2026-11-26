@@ -16,7 +16,9 @@ mcp = FastMCP("roadsense-reports")
 # privacy-relevant columns never reach the model, and tool results stay stable for the recorded keyless demo.
 INTERNAL = {"image_path", "jolt_g", "server_redacted", "suppressed_by", "road_class", "road_name", "approved_payload",
             "approved_by", "approved_at", "rejected_by", "delivery_attempts", "last_error", "next_attempt_at",
-            "external_ref", "corroborations", "severity_band", "repair_target_days", "pending_update"}
+            "external_ref", "corroborations", "severity_band", "repair_target_days", "pending_update",
+            # staff work on the report (who inspects it, their notes and photos) is not the agents' business
+            "inspector_id", "inspection_notes", "inspection_photo", "repair_notes", "repair_photo", "repaired_by"}
 
 
 def _for_agent(d: dict) -> dict:
@@ -56,8 +58,8 @@ def find_nearby(lat: float, lon: float, class_code: str | None = None, radius_m:
 @mcp.tool(name="reports_create_or_merge", annotations=WRITE)
 def create_or_merge(event_id: str, severity: str, jurisdiction: str, rationale: str) -> dict:
     """Attach a verified event to the matching open report within the dedupe radius (adds a driver confirmation), or
-    create a new report awaiting driver approval. A sighting of a report the authority closed is recorded as repair
-    verification evidence instead (action "reopened" or "reobserved"). severity: low|medium|high (use
+    create a new report awaiting review. A sighting of a report marked repaired is recorded as repair verification
+    evidence instead (action "reopened" or "reobserved"). severity: low|medium|high (use
     detector_severity). jurisdiction: the road authority you chose from geo_find_jurisdiction. rationale: one
     sentence on the jurisdiction choice."""
     if severity not in reports.SEVERITY_WEIGHT:

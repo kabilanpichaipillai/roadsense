@@ -2,8 +2,9 @@
 
 City service requests (read-only). HRM records pothole requests in Cityworks and publishes them on its ArcGIS Hub
 open-data portal. `sync_city_requests` reads any ArcGIS FeatureServer layer (ROADSENSE_CITY_SR_LAYER_URL) and stores
-open and recently closed requests, so dedupe can say "the city already has this one" and follow-up can see closures
-for reports filed by any channel. It needs no write access and no IT approval.
+open and recently closed requests, so dedupe can say "the city already has this one" and the service clock of a
+report referred to the city can see its closure. It never changes a report's status: the municipality's own reports
+move only through the workflow (core.workflow). It needs no write access and no IT approval.
 
 Third-party feeds (aggregator mode). Fleet and connected-vehicle data (Waze for Cities, Samsara, Nexar) is
 increasingly free. `ingest_detections` takes normalised sightings from any source; they never become reports on their
@@ -89,24 +90,25 @@ def sync_city_requests(conn: sqlite3.Connection, layer_url: str | None = None, w
             "reported_at": _iso(_field(attrs, "initiateddate", "dateinvtdone", "created_date", "reported_date")),
             "closed_at": _iso(_field(attrs, "closeddate", "closed_date", "datetimeclosed")), "raw": attrs})
         added, updated = added + new, updated + (not new)
-    closed = close_reports_fixed_by_city(conn)
+    closed = note_city_closures(conn)
     audit(conn, "sync", "city_requests_synced", None, {"added": added, "updated": updated, "skipped": skipped,
-                                                      "reports_fixed": closed})
-    return {"configured": True, "added": added, "updated": updated, "skipped": skipped, "reports_fixed": closed}
+                                                      "referrals_closed": closed})
+    return {"configured": True, "added": added, "updated": updated, "skipped": skipped, "referrals_closed": closed}
 
 
-def close_reports_fixed_by_city(conn: sqlite3.Connection) -> list[int]:
-    """A RoadSense report linked to a city request that the city closed is marked fixed (closed-loop status)."""
-    from . import reports, service_standards
+def note_city_closures(conn: sqlite3.Connection) -> list[int]:
+    """A report RoadSense referred to the city, linked to a city request the city closed: the closure goes on that
+    report's service clock and ledger. The report's own status is not touched (it is already closed, referred)."""
+    from . import service_standards
 
-    fixed = []
+    noted = []
     for r in conn.execute("SELECT r.id FROM reports r JOIN external_requests x ON x.report_id = r.id "
-                          "WHERE x.source = 'city_sr' AND x.status = 'closed' AND r.status = 'submitted'").fetchall():
-        reports.set_status(conn, r["id"], "fixed", "sync:city")
-        service_standards.observe_authority(conn, r["id"], "closed", "closed in the city's open-data layer",
-                                            "sync:city", "authority:open_data")
-        fixed.append(r["id"])
-    return fixed
+                          "JOIN service_clocks c ON c.report_id = r.id WHERE x.source = 'city_sr' AND "
+                          "x.status = 'closed' AND r.closed_reason = 'referred' AND c.closed_at IS NULL").fetchall():
+        if service_standards.observe_authority(conn, r["id"], "closed", "closed in the city's open-data layer",
+                                               "sync:city", "authority:open_data"):
+            noted.append(r["id"])
+    return noted
 
 
 def ingest_detections(conn: sqlite3.Connection, source: str, items: list[dict], radius_m: float | None = None) -> dict:

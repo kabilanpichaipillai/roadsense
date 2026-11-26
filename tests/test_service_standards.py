@@ -8,7 +8,7 @@ from conftest import add_event
 from fastapi.testclient import TestClient
 
 from roadsense.common.db import row, session
-from roadsense.core import delivery, ledger, open311, reports
+from roadsense.core import delivery, ledger, open311, reports, workflow
 from roadsense.core import service_standards as ss
 from roadsense.core.business_days import BUSINESS, CALENDAR, Calendar
 from roadsense.mcp_servers import municipality_server
@@ -20,15 +20,20 @@ _n = {"i": 0}
 
 
 def filed(code="D40", band="S4", jurisdiction=HRM, at=MON, road_class=None, start=True):
-    """A report filed with its authority at `at` (each one far enough from the others not to merge)."""
+    """A report approved at `at` and referred to its authority (each one far enough from the others not to merge).
+    start=False: approved only, with no clock (as before tracking existed)."""
     _n["i"] += 1
     event_id = f"ev-ss{_n['i']}"
     add_event(event_id, 44.60 + _n["i"] * 0.002, -63.58, code=code)
     with session() as conn:
         r = reports.create_or_merge(conn, event_id, "high", "x", jurisdiction, 15, jurisdiction=jurisdiction,
                                     band=band, road_class=road_class)["report"]
-        r = reports.set_status(conn, r["id"], "submitted", "test", service_request_id=str(r["id"]), channel="open311")
-        return ss.start_clock(conn, r, "mcp:municipality", submitted_at=at) if start else r
+        r = workflow.transition(conn, r["id"], "approve", "reviewer@roadsense.test", "reviewer", at=at)
+        if not start:
+            return r
+        r = workflow.transition(conn, r["id"], "refer", "mcp:municipality", "system", at=at,
+                                service_request_id=str(r["id"]), channel="open311")
+        return ss.start_clock(conn, r, "mcp:municipality", submitted_at=at)
 
 
 def approve_rules(authority=HRM):
@@ -48,8 +53,9 @@ def status(report_id, at):
 
 
 def ledger_types(report_id):
+    """The service-clock entries of a report's ledger (the workflow's own entries are in the same chain)."""
     with session() as conn:
-        return [e["event_type"] for e in ledger.entries(conn, report_id)]
+        return [e["event_type"] for e in ledger.entries(conn, report_id) if not e["event_type"].startswith("workflow_")]
 
 
 # ---------------- business-day calculation ----------------
@@ -234,7 +240,7 @@ def test_reopening_preserves_both_events_and_restarts_tracking(db, monkeypatch):
     with session() as conn:
         report = row(conn.execute("SELECT status FROM reports WHERE id = ?", (rid,)).fetchone())
     c = clock(rid)
-    assert out["reopened"] and report["status"] == "submitted"  # follow-up keeps polling it
+    assert out["reopened"] and report["status"] == "closed"  # referred: only the other authority's clock moves
     types = ledger_types(rid)
     assert types.index("report_closed") < types.index("report_reopened") < types.index("repair_started")
     assert c["reopened_count"] == 1 and c["completed_at"] is None and c["stage"] == "repair_started"
@@ -243,17 +249,13 @@ def test_reopening_preserves_both_events_and_restarts_tracking(db, monkeypatch):
 
 def test_delivery_starts_the_clock(db, monkeypatch):
     approve_rules()
-    r = filed(start=False)
-    with session() as conn:  # back to approved with a stored payload, as the reviewer leaves it
-        p = open311.build_payload(r)
-        reports.set_status(conn, r["id"], "approved", "reviewer@roadsense.test",
-                           approved_payload=json.dumps(p, sort_keys=True), approved_payload_hash=open311.payload_hash(p))
+    r = filed(start=False)  # approved, as the reviewer leaves it
     monkeypatch.setattr(delivery, "submit", lambda *a, **k: {"channel": "open311", "service_request_id": "55"})
     municipality_server.deliver(r["id"])
     c = clock(r["id"])
     assert c and c["rule_id"] and c["completion_due"] and ledger_types(r["id"]) == ["report_submitted"]
     with session() as conn:
-        entry = ledger.entries(conn, r["id"])[0]["data"]
+        entry = next(e["data"] for e in ledger.entries(conn, r["id"]) if e["event_type"] == "report_submitted")
     assert entry["evidence"]["service_request_id"] == "55" and entry["deadlines"]["completion_due"] == c["completion_due"]
 
 
@@ -289,8 +291,9 @@ def test_ledger_hashes_reuse_payload_hashing_and_chain(db):
         ss.record_event(conn, rid, "acknowledged", "manual@roadsense.test", "manual")
         rows = conn.execute("SELECT * FROM audit WHERE hash IS NOT NULL ORDER BY id").fetchall()
         assert ledger.verify(conn, rid)["ok"]
-    first, second = rows
-    assert first["prev_hash"] == ledger.GENESIS and second["prev_hash"] == first["hash"]
+    assert rows[0]["prev_hash"] == ledger.GENESIS  # the workflow's entries and the clock's share one chain
+    assert all(b["prev_hash"] == a["hash"] for a, b in zip(rows, rows[1:]))
+    first, second = rows[0], rows[-1]
     assert first["hash"] == open311.payload_hash({k: first[k] for k in ("ts", "actor", "action", "subject",
                                                                          "detail", "prev_hash")})
     data = json.loads(second["detail"])
@@ -392,7 +395,8 @@ def test_api_permissions(db):
     assert c.post("/service-standards/rules", json={**rule, "time_unit": "x"}, headers=admin).status_code == 422
     assert c.get(f"/service-standards/reports/{rid}", headers=viewer).status_code == 403
     t = c.get(f"/service-standards/reports/{rid}", headers=reviewer).json()
-    assert t["integrity"]["ok"] and t["ledger"][0]["event_type"] == "report_submitted"
+    clock_entries = [e for e in t["ledger"] if not e["event_type"].startswith("workflow_")]
+    assert t["integrity"]["ok"] and clock_entries[0]["event_type"] == "report_submitted"
     ev = c.post(f"/service-standards/reports/{rid}/events", json={"event": "acknowledged", "note": "phoned 311"},
                 headers=reviewer)
     assert ev.status_code == 200 and ev.json()["actor"] == "r@roadsense.test"

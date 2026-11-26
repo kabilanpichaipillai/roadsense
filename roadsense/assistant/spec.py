@@ -40,7 +40,8 @@ NOT_ENOUGH = "I could not find sufficient information in the available RoadSense
 ClassCode = Literal["D00", "D10", "D20", "D40"]
 Severity = Literal["low", "medium", "high"]
 Band = Literal["S1", "S2", "S3", "S4"]
-ReportStatus = Literal["pending_approval", "approved", "rejected", "submitted", "fixed", "delivery_failed"]
+ReportStatus = Literal["pending_approval", "awaiting_inspection", "inspection_assigned", "repair_needed", "repaired",
+                       "reopened", "closed"]
 Verification = Literal["awaiting", "verified", "reopened"]
 RiskCategory = Literal["critical", "high", "medium", "low"]
 ForecastCategory = Literal["high", "medium", "low"]

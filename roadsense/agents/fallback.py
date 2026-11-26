@@ -98,7 +98,7 @@ async def file_report(toolbox: Toolbox, report_id: int) -> dict:
         r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone())
     if r is None:
         return {"error": f"unknown report {report_id}"}
-    if r["status"] == "submitted":
+    if r["closed_reason"] == "referred":
         return {"ok": True, "service_request_id": r["service_request_id"], "channel": r["channel"], "by": "already sent"}
     result = await use(toolbox, "filing", "city_submit_request", {"report_id": report_id})
     _audit("filed" if result.get("ok") else "file_failed", f"report:{report_id}", result)
@@ -107,17 +107,19 @@ async def file_report(toolbox: Toolbox, report_id: int) -> dict:
 
 async def follow_up(toolbox: Toolbox) -> dict:
     with session() as conn:
+        # referred reports only: a report on the municipality's own roads is never sent anywhere
+        api = "r.closed_reason = 'referred' AND r.channel IN ('open311', 'cityworks', 'arcgis')"
         submitted = [r["id"] for r in conn.execute(
-            "SELECT id FROM reports WHERE status = 'submitted' AND channel IN ('open311', 'cityworks', 'arcgis')")]
-        # recently repaired reports are re-checked for a while: an authority can reopen a request it closed
+            f"SELECT r.id FROM reports r LEFT JOIN service_clocks c ON c.report_id = r.id WHERE {api} AND "
+            "c.completed_at IS NULL AND c.closed_at IS NULL")]
+        # recently repaired referrals are re-checked for a while: an authority can reopen a request it closed
         cutoff = (datetime.now(timezone.utc) - timedelta(days=settings.reopen_watch_days)).isoformat(
             timespec="seconds")
         recheck = [r["id"] for r in conn.execute(
-            "SELECT r.id FROM reports r JOIN service_clocks c ON c.report_id = r.id WHERE r.status = 'fixed' AND "
-            "r.channel IN ('open311', 'cityworks', 'arcgis') AND COALESCE(c.closed_at, c.completed_at, '') >= ?",
-            (cutoff,))]
+            f"SELECT r.id FROM reports r JOIN service_clocks c ON c.report_id = r.id WHERE {api} AND "
+            "COALESCE(c.closed_at, c.completed_at, '') >= ?", (cutoff,))]
         fixed_unnotified = [dict(r) for r in conn.execute(
-            "SELECT * FROM reports r WHERE status = 'fixed' AND NOT EXISTS "
+            "SELECT * FROM reports r WHERE status = 'repaired' AND NOT EXISTS "
             "(SELECT 1 FROM notifications n WHERE n.report_id = r.id)")]
     fixed = []
     for rid in submitted:
@@ -133,7 +135,7 @@ async def follow_up(toolbox: Toolbox) -> dict:
         tracking = service_standards.sweep(conn)
     with session() as conn:
         to_notify = [dict(r) for r in conn.execute(
-            "SELECT * FROM reports r WHERE status = 'fixed' AND NOT EXISTS "
+            "SELECT * FROM reports r WHERE status = 'repaired' AND NOT EXISTS "
             "(SELECT 1 FROM notifications n WHERE n.report_id = r.id)")]
     for r in to_notify:
         await use(toolbox, "follow_up", "reports_notify_driver", {"report_id": r["id"], "message":

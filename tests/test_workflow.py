@@ -299,3 +299,22 @@ def test_old_statuses_migrate_once(db):
             assert workflow.migrate(conn) == 0
             assert conn.execute("SELECT COUNT(*) FROM audit WHERE action = 'status_migrated'").fetchone()[0] == n
     assert get(ids[5])["reopen_count"] == 1
+
+
+def test_no_code_outside_the_workflow_writes_report_status():
+    """core.workflow is the only writer of reports.status (string literals joined across lines before matching)."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "roadsense"
+    offenders = []
+    for path in root.rglob("*.py"):
+        if path.name == "workflow.py" and path.parent.name == "core":
+            continue
+        text = re.sub(r"\"\s*\n\s*f?\"", "", path.read_text(encoding="utf-8"))
+        for m in re.finditer(r"UPDATE reports SET(.*?)(WHERE|\"\"\"|$)", text, re.S | re.M):
+            if re.search(r"(?<![\w.])status\s*=", m.group(1)):
+                offenders.append(f"{path.relative_to(root)}: {m.group(0)[:80]}")
+        if "set_status(" in text and path.name != "mock_open311.py":
+            offenders.append(f"{path.relative_to(root)}: set_status")
+    assert offenders == []

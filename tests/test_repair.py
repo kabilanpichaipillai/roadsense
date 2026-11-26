@@ -1,4 +1,4 @@
-"""Independent repair verification: re-observing reports the authority closed."""
+"""Independent repair verification: re-observing reports marked repaired, and reopening them."""
 import json
 
 import cv2
@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from roadsense.common.config import settings
 from roadsense.common.db import now, row, session
-from roadsense.core import delivery, repair, reports
+from roadsense.core import delivery, ledger, repair, reports, service_standards, workflow
 from roadsense.mcp_servers import municipality_server
 
 HRM = "Halifax Regional Municipality"
@@ -18,15 +18,30 @@ LAT, LON = 44.643, -63.58
 M = 1 / 111_320  # one metre of latitude
 
 
+def move(rid, action, **fields):
+    with session() as conn:
+        return workflow.transition(conn, rid, action, "rev@x.test", "admin", **fields)
+
+
+def repair_done(rid):
+    """Inspected, scheduled and marked repaired by staff."""
+    move(rid, "repair_needed", repair_eta=workflow.today().isoformat())
+    move(rid, "repaired", notes="patched")
+
+
 def closed_report(event_id="ev-orig1", lat=LAT, lon=LON, code="D40", road=None) -> int:
-    """A report filed from a first trip, sent, then closed by the authority's status feed (follow-up)."""
+    """A report from a first trip, taken through review and inspection, and marked repaired."""
     add_event(event_id, lat, lon, code=code, trip="trip-orig")
     with session() as conn:
         conn.execute("UPDATE events SET verified_confidence = 0.85 WHERE id = ?", (event_id,))
         rid = reports.create_or_merge(conn, event_id, "high", "x", HRM, 15, jurisdiction=HRM,
                                       road_name=road)["report"]["id"]
-        reports.set_status(conn, rid, "submitted", "test", service_request_id=f"sr-{rid}", channel="open311")
-        reports.set_status(conn, rid, "fixed", "mcp:municipality")
+        conn.execute("INSERT OR IGNORE INTO users (email, role, created_at) VALUES ('i@x.test', 'inspector', ?)",
+                     (now(),))
+        inspector = conn.execute("SELECT id FROM users WHERE email = 'i@x.test'").fetchone()[0]
+    move(rid, "approve")
+    move(rid, "assign", inspector_id=inspector)
+    repair_done(rid)
     return rid
 
 
@@ -62,15 +77,15 @@ def hist(rid):
 
 
 # 1
-def test_authority_closure_keeps_its_status_and_awaits_verification(db):
+def test_marked_repaired_awaits_independent_verification(db):
     rid = closed_report()
     r = get(rid)
-    assert r["status"] == "fixed" and r["verification_status"] == "awaiting" and r["closed_at"]
-    assert repair.lifecycle(r) == "Closed"
+    assert r["status"] == "repaired" and r["verification_status"] == "awaiting" and r["closed_at"] == r["repaired_at"]
+    assert repair.lifecycle(r) == "Repaired"
     with session() as conn:
         assert [w["report_id"] for w in repair.watchlist(conn)] == [rid]
         actions = [a for (a,) in conn.execute("SELECT action FROM audit WHERE subject = ?", (f"report:{rid}",))]
-    assert "status_fixed" in actions and "repair_awaiting_verification" in actions
+    assert "ledger_workflow_repaired" in actions
 
 
 # 2 + 3
@@ -80,8 +95,8 @@ def test_same_pothole_seen_again_reopens_the_report(db):
     assert out["action"] == "reopened" and out["report"]["id"] == rid
     r = get(rid)
     assert r["verification_status"] == "reopened" and r["reopen_event_id"] == "ev-again1"
-    assert "still there" in r["reopen_reason"] and r["status"] == "fixed"  # the authority's status is kept
-    assert repair.lifecycle(r) == "Reopened"
+    assert "still there" in r["reopen_reason"] and r["status"] == "reopened" and r["reopen_count"] == 1
+    assert repair.lifecycle(r) == "Reopened" and r["repair_eta"] is None
     (h,) = hist(rid)
     assert h["result"] == "not_verified" and h["observed_class"] == "D40" and 3 < h["distance_m"] < 6
     assert h["original_image"] == "event:ev-orig1" and h["followup_image"] == "event:ev-again1"
@@ -92,7 +107,11 @@ def test_same_pothole_seen_again_reopens_the_report(db):
         actions = {a for (a,) in conn.execute("SELECT action FROM audit WHERE subject = ?", (f"report:{rid}",))}
     assert tuple(linked) == (rid, "processed")
     assert {"repair_verification_started", "repair_verification_completed", "repair_not_verified",
-            "report_reopened"} <= actions
+            "ledger_workflow_reopen"} <= actions
+    with session() as conn:  # reopened by RoadSense itself, never by the agent that triaged the sighting
+        entry = [e for e in ledger.entries(conn, rid) if e["event_type"] == "workflow_reopen"][-1]
+        assert ledger.verify(conn, rid)["ok"]
+    assert entry["actor"] == "verify:repair" and entry["data"]["event_id"] == "ev-again1"
 
 
 # 4 + 5
@@ -110,7 +129,8 @@ def test_repair_is_verified_only_after_enough_independent_clean_passes(db):
     add_pass("p-trip3", "trip-3", metres_south=8)
     assert check("trip-3")["verified"] == [rid]
     r = get(rid)
-    assert r["verification_status"] == "verified" and r["status"] == "fixed"
+    assert r["verification_status"] == "verified" and r["status"] == "repaired"
+    assert repair.lifecycle(r) == "Repaired (verified)"
     assert hist(rid)[-1]["result"] == "verified" and hist(rid)[-1]["followup_image"] == "pass:p-trip3"
 
 
@@ -207,18 +227,17 @@ def test_original_photo_and_history_are_preserved(db):
     before = get(rid)
     sighting("ev-again1", "trip-2")
     after = get(rid)
-    for k in ("best_event_id", "class_code", "lat", "lon", "status", "closed_at", "service_request_id",
-              "created_at", "trip_id"):
+    for k in ("best_event_id", "class_code", "lat", "lon", "closed_at", "repaired_at", "created_at", "trip_id"):
         assert after[k] == before[k], k
     assert photo.read_bytes() == b"\xff\xd8original"
     with session() as conn:
         orig = conn.execute("SELECT report_id, status FROM events WHERE id = 'ev-orig1'").fetchone()
-        closure = conn.execute("SELECT COUNT(*) FROM audit WHERE action = 'status_fixed' AND subject = ?",
+        closure = conn.execute("SELECT COUNT(*) FROM audit WHERE action = 'ledger_workflow_repaired' AND subject = ?",
                                (f"report:{rid}",)).fetchone()[0]
         s = repair.summary(conn, after)
     assert tuple(orig) == (rid, "processed") and closure == 1
     assert s["original"]["event_id"] == "ev-orig1" and s["latest"]["observation_id"] == "ev-again1"
-    assert s["authority_status"] == "fixed" and s["state"] == "reopened"
+    assert s["report_status"] == "reopened" and s["state"] == "reopened"
 
 
 def test_observations_before_the_closure_do_not_count(db):
@@ -246,24 +265,28 @@ def test_metrics_do_not_count_unobserved_repairs_as_failures(db):
         m = repair.metrics(conn)
     assert get(verified)["verification_status"] == "verified" and get(reopened)["verification_status"] == "reopened"
     assert get(inconclusive)["verification_status"] == "awaiting"
-    assert m["closed_by_authority"] == 4 and m["verified"] == 1 and m["reopened"] == 1 and m["eligible"] == 2
+    assert m["marked_repaired"] == 4 and m["verified"] == 1 and m["reopened"] == 1 and m["eligible"] == 2
     assert m["verification_rate"] == 50.0  # 1 / (1 verified + 1 reopened), not 1 / 4
     assert m["awaiting_verification"] == 2 and m["not_yet_reobserved"] == 1 and m["awaiting_inconclusive"] == 1
     assert m["inconclusive_verifications"] == 2  # trip t-a's first clean pass, and the blurry frame
 
 
 # 12
-def test_follow_up_status_feed_still_closes_reports(db, monkeypatch):
+def test_the_authority_status_feed_never_changes_our_reports(db, monkeypatch):
+    """Follow-up polls only reports referred to another authority, and only moves that authority's clock."""
     add_event("ev-fu1", LAT, LON, trip="trip-orig")
     with session() as conn:
         rid = reports.create_or_merge(conn, "ev-fu1", "high", "x", HRM, 15, jurisdiction=HRM)["report"]["id"]
-        reports.set_status(conn, rid, "submitted", "test", service_request_id="77", channel="open311")
-    monkeypatch.setattr(delivery, "status", lambda *a, **k: {"status": "open"})
-    assert municipality_server.request_status(rid)["fixed"] is False and get(rid)["verification_status"] is None
+    move(rid, "approve")
+    with session() as conn:
+        r = workflow.transition(conn, rid, "refer", "mcp:municipality", "system", service_request_id="77",
+                                channel="open311")
+        service_standards.start_clock(conn, r, "mcp:municipality")
     monkeypatch.setattr(delivery, "status", lambda *a, **k: {"status": "closed", "status_notes": "patched"})
     out = municipality_server.request_status(rid)
     assert out["fixed"] and out["newly_fixed"] and out["city_status"] == "closed"
-    assert get(rid)["status"] == "fixed" and get(rid)["verification_status"] == "awaiting"
+    assert (get(rid)["status"], get(rid)["closed_reason"], get(rid)["verification_status"]) == \
+        ("closed", "referred", None)
     again = municipality_server.request_status(rid)
     assert again["fixed"] and not again["newly_fixed"]
 
@@ -291,10 +314,11 @@ def test_pass_upload_api_and_report_detail(db):
     check("trip-9")
     d = c.get(f"/reports/{rid}", headers=AUTH).json()
     v = d["verification"]
-    assert d["report"]["lifecycle"] == "Closed" and v["state"] == "awaiting" and v["latest"]["image"] == "pass:trip-9-r1"
+    assert d["report"]["lifecycle"] == "Repaired" and v["state"] == "awaiting"
+    assert v["latest"]["image"] == "pass:trip-9-r1"
     assert v["original"]["image"] == "event:ev-orig1" and len(v["history"]) == 1
     assert c.get("/stats", headers=AUTH).json()["repair_verification"]["awaiting_verification"] == 1
-    assert {x["lifecycle"] for x in c.get("/reports", headers=AUTH).json()} == {"Closed"}
+    assert {x["lifecycle"] for x in c.get("/reports", headers=AUTH).json()} == {"Repaired"}
 
 
 def test_retention_clears_pass_positions(db):
@@ -326,46 +350,40 @@ def test_edge_keeps_one_frame_per_watched_spot(tmp_path):
     assert (tmp_path / f"pass-{p.id}.jpg").is_file() and (tmp_path / f"pass-{p.id}.json").is_file()
 
 
-# authority reopens a closed request, then closes it again
-def test_authority_reopen_then_reclosure_starts_a_fresh_check(db, monkeypatch):
+# reopened, repaired again: a fresh check that counts only passes after the new repair
+def test_reopen_then_new_repair_starts_a_fresh_check(db):
     import time
 
     rid = closed_report()
     add_pass("p-cycle1", "trip-2")
     check("trip-2")  # one clean pass in the first cycle (1 of 2)
     first_closure = get(rid)["closed_at"]
-    replies = iter([{"status": "open", "status_notes": "Reopened: patch failed"},
-                    {"status": "closed", "status_notes": "Repaired again"}])
-    monkeypatch.setattr(delivery, "status", lambda *a, **k: next(replies))
-    assert municipality_server.request_status(rid)["reopened"]
-    r = get(rid)
-    assert r["status"] == "submitted" and r["verification_status"] is None and r["closed_at"] is None
-    assert repair.lifecycle(r) == "In Progress"
+    r = move(rid, "reopen", reason="resident says the patch failed")
+    assert r["status"] == "reopened" and r["verification_status"] == "reopened" and r["reopen_count"] == 1
+    assert "reopen" not in workflow.allowed_actions(r, "admin") and "repair_needed" in workflow.allowed_actions(r, "admin")
     with session() as conn:
-        assert repair.watchlist(conn) == []  # not watched while the authority is working on it again
-        reset = conn.execute("SELECT detail FROM audit WHERE action = 'repair_verification_reset'").fetchone()
-    assert json.loads(reset[0])["previous"]["closed_at"] == first_closure  # the old cycle stays on record
+        assert repair.watchlist(conn) == []  # not watched while it waits for the new repair
 
     time.sleep(1.1)  # closure times have one-second resolution
-    assert municipality_server.request_status(rid)["newly_fixed"]
+    repair_done(rid)
     r = get(rid)
-    assert r["verification_status"] == "awaiting" and r["closed_at"] > first_closure
+    assert r["status"] == "repaired" and r["verification_status"] == "awaiting" and r["closed_at"] > first_closure
     add_pass("p-cycle2", "trip-3")
-    assert check("trip-3")["verified"] == []  # the first cycle's pass no longer counts towards this closure
+    assert check("trip-3")["verified"] == []  # the first cycle's pass no longer counts towards this repair
     assert "1 of 2" in hist(rid)[-1]["reason"] and len(hist(rid)) == 2  # history of both cycles is kept
     add_pass("p-cycle2b", "trip-4", metres_south=8)
     assert check("trip-4")["verified"] == [rid]
-
-
-def test_authority_reopen_clears_a_roadsense_reopening(db):
-    rid = closed_report()
-    sighting("ev-again-r", "trip-2", lat=LAT + 3 * M)
-    assert get(rid)["verification_status"] == "reopened"
     with session() as conn:
-        reports.set_status(conn, rid, "submitted", "mcp:municipality")  # the authority acts on it
-        prev = json.loads(conn.execute("SELECT detail FROM audit WHERE action = 'repair_verification_reset'")
-                          .fetchone()[0])["previous"]
-        reports.set_status(conn, rid, "fixed", "mcp:municipality")
-    assert prev["verification_status"] == "reopened" and prev["reopen_event_id"] == "ev-again-r"
-    r = get(rid)
-    assert r["verification_status"] == "awaiting" and r["reopen_event_id"] is None and repair.lifecycle(r) == "Closed"
+        assert ledger.verify(conn, rid)["ok"]
+
+
+def test_a_verified_repair_is_final(db):
+    rid = closed_report()
+    for t, south in (("t-1", 10), ("t-2", 8)):
+        add_pass(f"p-{t}", t, metres_south=south)
+        check(t)
+    assert get(rid)["verification_status"] == "verified"
+    out = sighting("ev-later", "trip-9", lat=LAT + 2 * M)  # damage after verification: a new defect, a new report
+    assert out["action"] == "created" and out["report"]["id"] != rid
+    with pytest.raises(workflow.WorkflowError):
+        move(rid, "reopen", reason="x")

@@ -178,19 +178,14 @@ def test_every_ns_municipality_has_a_channel():
 
 
 def _approved(event_id, authority):
-    import json
 
     from conftest import add_event
 
-    from roadsense.common.db import row
-    from roadsense.core import reports
+    from roadsense.core import reports, workflow
     add_event(event_id, 44.039, -64.716)
     with session() as conn:
         rid = reports.create_or_merge(conn, event_id, "high", "x", authority, 15, jurisdiction=authority)["report"]["id"]
-        r = row(conn.execute("SELECT * FROM reports WHERE id = ?", (rid,)).fetchone())
-        pl = open311.build_payload(r)
-        reports.set_status(conn, rid, "approved", "reviewer", approved_payload_hash=open311.payload_hash(pl),
-                           approved_payload=json.dumps(pl, sort_keys=True), approved_by="reviewer")
+        workflow.transition(conn, rid, "approve", "reviewer", "reviewer")
     return rid
 
 
@@ -212,7 +207,8 @@ def test_undeliverable_report_fails_once_and_is_not_marked_sent(db, authority, w
     with pytest.raises(ToolError, match=why):
         municipality_server.deliver(rid)
     s = _status(rid)
-    assert s["status"] == "delivery_failed" and s["delivery_attempts"] == 1 and why in s["last_error"]
+    # not referred: it waits for staff (resend, or inspect it themselves) with the reason on the report
+    assert s["status"] == "awaiting_inspection" and s["delivery_attempts"] == 1 and why in s["last_error"]
     assert s["service_request_id"] is None
 
 

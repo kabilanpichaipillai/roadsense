@@ -225,7 +225,7 @@ def parse_rules(question: str, previous: dict | None = None, today: date | None 
 
     if re.search(r"\b(reports?|requests?) (that|which) (are|were|is|was) (open|still open|unresolved)\b|\bunresolved\b|"
                  r"\bstill open\b", q):
-        spec["statuses"] = ["pending_approval", "approved", "submitted", "delivery_failed"]
+        spec["statuses"] = ["pending_approval", "awaiting_inspection", "inspection_assigned", "repair_needed", "reopened"]
     elif re.search(r"\bawaiting (review|approval)\b|\bpending\b", q):
         spec["statuses"] = ["pending_approval"]
     if re.search(r"\b(neighbou?rhoods?|areas? of the city|districts?)\b", q):
